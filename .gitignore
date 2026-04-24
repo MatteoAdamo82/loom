@@ -21,9 +21,13 @@ vendor/
 loom.toml
 .loom/
 
-# frontend (reserved for later Wails work)
-frontend/node_modules/
-frontend/dist/
+# Wails GUI artefacts
+cmd/loom-gui/loom-gui
+cmd/loom-gui/frontend/node_modules/
+cmd/loom-gui/frontend/dist/
+cmd/loom-gui/frontend/package.json.md5
+cmd/loom-gui/frontend/wailsjs/
+cmd/loom-gui/build/bin/
 
 # editor/os
 .DS_Store
