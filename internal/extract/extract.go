@@ -46,9 +46,10 @@ func (r *Registry) Resolve(path string) (Extractor, error) {
 	return nil, fmt.Errorf("no extractor for .%s files", ext)
 }
 
-// DefaultRegistry returns the extractors enabled in the MVP (txt, md).
+// DefaultRegistry returns the extractors enabled by default (txt, md, pdf,
+// html). Callers that want a custom set can build their own Registry.
 func DefaultRegistry() *Registry {
-	return NewRegistry(Text{})
+	return NewRegistry(Text{}, PDF{}, HTML{})
 }
 
 // ----- text (txt, md) -------------------------------------------------------

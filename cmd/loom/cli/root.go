@@ -41,6 +41,7 @@ func Root() *cobra.Command {
 		cmdQuery(&configPath),
 		cmdNotes(&configPath),
 		cmdNoteShow(&configPath),
+		cmdLint(&configPath),
 		cmdConfigShow(&configPath),
 	)
 	return root
@@ -87,8 +88,28 @@ func makeLLM(cfg config.LLMConfig) (llm.Client, error) {
 			Endpoint: cfg.Endpoint,
 			Model:    cfg.Model,
 		}), nil
+	case "openai":
+		key := cfg.APIKey()
+		if key == "" {
+			return nil, fmt.Errorf("openai provider requires api_key_env to point at a non-empty env var")
+		}
+		return llm.NewOpenAI(llm.OpenAIConfig{
+			Endpoint: cfg.Endpoint,
+			Model:    cfg.Model,
+			APIKey:   key,
+		}), nil
+	case "anthropic":
+		key := cfg.APIKey()
+		if key == "" {
+			return nil, fmt.Errorf("anthropic provider requires api_key_env to point at a non-empty env var")
+		}
+		return llm.NewAnthropic(llm.AnthropicConfig{
+			Endpoint: cfg.Endpoint,
+			Model:    cfg.Model,
+			APIKey:   key,
+		}), nil
 	default:
-		return nil, fmt.Errorf("provider %q not yet supported in MVP (ollama only)", cfg.Provider)
+		return nil, fmt.Errorf("unknown llm provider %q (supported: ollama, openai, anthropic)", cfg.Provider)
 	}
 }
 
