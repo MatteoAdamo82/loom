@@ -1,0 +1,32 @@
+# binaries
+bin/
+dist/
+/loom
+/loom-mcp
+/loom-gui
+
+# go build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# local db/config
+*.db
+*.db-shm
+*.db-wal
+loom.toml
+.loom/
+
+# frontend (reserved for later Wails work)
+frontend/node_modules/
+frontend/dist/
+
+# editor/os
+.DS_Store
+.idea/
+.vscode/
+*.swp
