@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (with race detector)
+        run: go test -race -timeout 5m ./...
+
+      - name: Build CLI + MCP binaries
+        run: |
+          mkdir -p dist
+          go build -o dist/loom ./cmd/loom
+          go build -o dist/loom-mcp ./cmd/loom-mcp
+
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          dist/loom --help > /dev/null
+          dist/loom --version
+          dist/loom-mcp --help 2>&1 | head -5 || true

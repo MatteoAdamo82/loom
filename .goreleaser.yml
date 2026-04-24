@@ -1,0 +1,99 @@
+# goreleaser config for Loom — see https://goreleaser.com
+# Builds two CLI binaries (loom + loom-mcp) for macOS, Linux, and Windows.
+# The Wails GUI .app bundle is built and uploaded by a separate workflow step
+# (it needs the wails CLI + Node, which goreleaser doesn't run).
+version: 2
+
+project_name: loom
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: loom
+    main: ./cmd/loom
+    binary: loom
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/MatteoAdamo82/loom/cmd/loom/cli.Version={{.Version}}
+
+  - id: loom-mcp
+    main: ./cmd/loom-mcp
+    binary: loom-mcp
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+    ids: [loom, loom-mcp]
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: '{{ .Tag }}-snapshot'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: matteoadamo
+    name: loom
+  draft: false
+  prerelease: auto
+  name_template: 'Loom {{ .Tag }}'
+  header: |
+    ## Loom {{ .Tag }}
+
+    LLM memory: SQLite + BM25 + LLM, no embeddings.
+
+    Two binaries are bundled in each archive:
+    - `loom` — CLI for ingest, query, lint
+    - `loom-mcp` — Model Context Protocol stdio server
+
+    The macOS GUI app (`Loom.app`) is uploaded as a separate asset.
+  footer: |
+    ---
+    Full changelog: https://github.com/MatteoAdamo82/loom/compare/{{ .PreviousTag }}...{{ .Tag }}
