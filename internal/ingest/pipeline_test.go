@@ -2,13 +2,23 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/MatteoAdamo82/loom/internal/llm"
 	"github.com/MatteoAdamo82/loom/internal/storage"
 )
+
+// erroringLLM always returns the configured error.
+type erroringLLM struct{ err error }
+
+func (e *erroringLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return nil, e.err
+}
+func (*erroringLLM) Name() string { return "erroring-llm" }
 
 type fakeLLM struct {
 	responses []string
@@ -194,6 +204,80 @@ func TestIngestEntityReusedAcrossSources(t *testing.T) {
 	}
 	if citations != 2 {
 		t.Errorf("citations after two ingests = %d, want 2", citations)
+	}
+}
+
+func TestIngestAnalyzeFailureLeavesNoTrace(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	boom := errors.New("simulated analyze timeout")
+	p := NewPipeline(s, &erroringLLM{err: boom})
+	ctx := context.Background()
+	path := writeDoc(t, t.TempDir(), "doc.md", "# Doc\n\nbody text\n")
+
+	_, err = p.Ingest(ctx, path)
+	if err == nil {
+		t.Fatal("expected analyze failure to propagate")
+	}
+	if !strings.Contains(err.Error(), "analyze") {
+		t.Errorf("error should mention analyze step: %v", err)
+	}
+
+	// The DB must be completely untouched after an analyze failure so a later
+	// retry can succeed.
+	assertCount(t, s, "sources", 0)
+	assertCount(t, s, "chunks", 0)
+	assertCount(t, s, "notes", 0)
+	assertCount(t, s, "links", 0)
+	assertCount(t, s, "operations", 0)
+}
+
+func TestIngestRetryAfterAnalyzeFailureSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	path := writeDoc(t, t.TempDir(), "doc.md", "# LLM Wiki\n\nbody mentions Karpathy.\n")
+	ctx := context.Background()
+
+	// First attempt: analyze fails.
+	p1 := NewPipeline(s, &erroringLLM{err: errors.New("transient")})
+	if _, err := p1.Ingest(ctx, path); err == nil {
+		t.Fatal("expected first attempt to fail")
+	}
+	assertCount(t, s, "sources", 0)
+
+	// Second attempt with a working LLM: should fully ingest (not dedup).
+	p2 := NewPipeline(s, &fakeLLM{responses: []string{analysisJSON}})
+	res, err := p2.Ingest(ctx, path)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if res.Deduplicated {
+		t.Error("retry should not be treated as dedup since prior attempt wrote nothing")
+	}
+	if len(res.NotesCreated) != 4 {
+		t.Errorf("notes created after retry = %d, want 4", len(res.NotesCreated))
+	}
+}
+
+func assertCount(t *testing.T, s *storage.Store, table string, want int) {
+	t.Helper()
+	var got int
+	// Table name is test-controlled; no SQL injection risk.
+	if err := s.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	if got != want {
+		t.Errorf("%s count = %d, want %d", table, got, want)
 	}
 }
 

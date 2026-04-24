@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -286,6 +287,46 @@ func TestIndexNoteRemovesOldRow(t *testing.T) {
 	}
 	if len(hits) != 0 {
 		t.Errorf("stale term should not match, got %+v", hits)
+	}
+}
+
+func TestWithTxCommitsOnSuccess(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	err := s.WithTx(ctx, func(tx *Tx) error {
+		return tx.CreateNote(ctx, &Note{
+			Slug: "in-tx", Title: "committed", Kind: "entity",
+			Content: "survives", Summary: "s",
+		})
+	})
+	if err != nil {
+		t.Fatalf("withtx: %v", err)
+	}
+	if _, err := s.GetNoteBySlug(ctx, "in-tx"); err != nil {
+		t.Errorf("committed note not visible: %v", err)
+	}
+}
+
+func TestWithTxRollsBackOnError(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sentinel := errors.New("simulated failure")
+	err := s.WithTx(ctx, func(tx *Tx) error {
+		if err := tx.CreateNote(ctx, &Note{
+			Slug: "doomed", Title: "will rollback", Kind: "entity",
+			Content: "x", Summary: "y",
+		}); err != nil {
+			return err
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("want sentinel error, got %v", err)
+	}
+	if _, err := s.GetNoteBySlug(ctx, "doomed"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("rolled-back note should not be visible, got %v", err)
 	}
 }
 

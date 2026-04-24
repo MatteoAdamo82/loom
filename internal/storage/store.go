@@ -13,8 +13,23 @@ import (
 
 var ErrNotFound = errors.New("storage: not found")
 
+// execer is the minimal surface we need to run queries; both *sql.DB and
+// *sql.Tx implement it, which lets the CRUD helpers below work transparently
+// inside or outside a transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 type Store struct {
 	db *sql.DB
+}
+
+// Tx is a transactional handle that exposes the same CRUD surface as Store
+// but batches writes under a single SQLite transaction.
+type Tx struct {
+	tx *sql.Tx
 }
 
 func Open(path string) (*Store, error) {
@@ -42,12 +57,27 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) DB() *sql.DB { return s.db }
 
+// WithTx runs fn inside a SQLite transaction. If fn returns an error, the
+// transaction is rolled back and that error is returned; otherwise the
+// transaction is committed.
+func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	if err := fn(&Tx{tx: tx}); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 // ---------------------------------------------------------------------------
 // sources
 // ---------------------------------------------------------------------------
 
-func (s *Store) CreateSource(ctx context.Context, src *Source) error {
-	res, err := s.db.ExecContext(ctx,
+func createSource(ctx context.Context, q execer, src *Source) error {
+	res, err := q.ExecContext(ctx,
 		`INSERT INTO sources (uri, kind, title, content, hash, metadata)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		src.URI, src.Kind, src.Title, src.Content, src.Hash, nullStringJSON(src.Metadata),
@@ -63,30 +93,51 @@ func (s *Store) CreateSource(ctx context.Context, src *Source) error {
 	return nil
 }
 
-func (s *Store) GetSourceByHash(ctx context.Context, hash string) (*Source, error) {
-	row := s.db.QueryRowContext(ctx,
+func (s *Store) CreateSource(ctx context.Context, src *Source) error {
+	return createSource(ctx, s.db, src)
+}
+func (t *Tx) CreateSource(ctx context.Context, src *Source) error {
+	return createSource(ctx, t.tx, src)
+}
+
+func getSourceByHash(ctx context.Context, q execer, hash string) (*Source, error) {
+	row := q.QueryRowContext(ctx,
 		`SELECT id, uri, kind, title, content, hash, ingested_at, metadata
 		   FROM sources WHERE hash = ?`, hash)
 	return scanSource(row)
 }
 
-func (s *Store) GetSource(ctx context.Context, id int64) (*Source, error) {
-	row := s.db.QueryRowContext(ctx,
+func (s *Store) GetSourceByHash(ctx context.Context, hash string) (*Source, error) {
+	return getSourceByHash(ctx, s.db, hash)
+}
+func (t *Tx) GetSourceByHash(ctx context.Context, hash string) (*Source, error) {
+	return getSourceByHash(ctx, t.tx, hash)
+}
+
+func getSource(ctx context.Context, q execer, id int64) (*Source, error) {
+	row := q.QueryRowContext(ctx,
 		`SELECT id, uri, kind, title, content, hash, ingested_at, metadata
 		   FROM sources WHERE id = ?`, id)
 	return scanSource(row)
+}
+
+func (s *Store) GetSource(ctx context.Context, id int64) (*Source, error) {
+	return getSource(ctx, s.db, id)
+}
+func (t *Tx) GetSource(ctx context.Context, id int64) (*Source, error) {
+	return getSource(ctx, t.tx, id)
 }
 
 // ---------------------------------------------------------------------------
 // notes
 // ---------------------------------------------------------------------------
 
-func (s *Store) CreateNote(ctx context.Context, n *Note) error {
+func createNote(ctx context.Context, q execer, n *Note) error {
 	kw, err := json.Marshal(n.Keywords)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx,
+	res, err := q.ExecContext(ctx,
 		`INSERT INTO notes (slug, title, kind, content, summary, keywords)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		n.Slug, n.Title, n.Kind, n.Content, n.Summary, string(kw),
@@ -103,30 +154,48 @@ func (s *Store) CreateNote(ctx context.Context, n *Note) error {
 	return nil
 }
 
-func (s *Store) GetNoteBySlug(ctx context.Context, slug string) (*Note, error) {
-	row := s.db.QueryRowContext(ctx,
+func (s *Store) CreateNote(ctx context.Context, n *Note) error {
+	return createNote(ctx, s.db, n)
+}
+func (t *Tx) CreateNote(ctx context.Context, n *Note) error {
+	return createNote(ctx, t.tx, n)
+}
+
+func getNoteBySlug(ctx context.Context, q execer, slug string) (*Note, error) {
+	row := q.QueryRowContext(ctx,
 		`SELECT id, slug, title, kind, content, summary, keywords, created_at, updated_at, version
 		   FROM notes WHERE slug = ?`, slug)
 	return scanNote(row)
 }
 
-func (s *Store) GetNote(ctx context.Context, id int64) (*Note, error) {
-	row := s.db.QueryRowContext(ctx,
+func (s *Store) GetNoteBySlug(ctx context.Context, slug string) (*Note, error) {
+	return getNoteBySlug(ctx, s.db, slug)
+}
+func (t *Tx) GetNoteBySlug(ctx context.Context, slug string) (*Note, error) {
+	return getNoteBySlug(ctx, t.tx, slug)
+}
+
+func getNote(ctx context.Context, q execer, id int64) (*Note, error) {
+	row := q.QueryRowContext(ctx,
 		`SELECT id, slug, title, kind, content, summary, keywords, created_at, updated_at, version
 		   FROM notes WHERE id = ?`, id)
 	return scanNote(row)
 }
 
-func (s *Store) UpdateNote(ctx context.Context, n *Note, reason string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+func (s *Store) GetNote(ctx context.Context, id int64) (*Note, error) {
+	return getNote(ctx, s.db, id)
+}
+func (t *Tx) GetNote(ctx context.Context, id int64) (*Note, error) {
+	return getNote(ctx, t.tx, id)
+}
 
+// updateNoteInline archives the current version and writes the new one under
+// the provided execer; the caller is responsible for transactionality if
+// atomicity matters.
+func updateNoteInline(ctx context.Context, q execer, n *Note, reason string) error {
 	var prevContent string
 	var prevVersion int
-	err = tx.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT content, version FROM notes WHERE id = ?`, n.ID,
 	).Scan(&prevContent, &prevVersion)
 	if err != nil {
@@ -136,7 +205,7 @@ func (s *Store) UpdateNote(ctx context.Context, n *Note, reason string) error {
 		return err
 	}
 
-	if _, err := tx.ExecContext(ctx,
+	if _, err := q.ExecContext(ctx,
 		`INSERT INTO note_versions (note_id, version, content, reason)
 		 VALUES (?, ?, ?, ?)`,
 		n.ID, prevVersion, prevContent, reason,
@@ -149,7 +218,7 @@ func (s *Store) UpdateNote(ctx context.Context, n *Note, reason string) error {
 		return err
 	}
 	newVersion := prevVersion + 1
-	_, err = tx.ExecContext(ctx,
+	_, err = q.ExecContext(ctx,
 		`UPDATE notes
 		    SET title = ?, kind = ?, content = ?, summary = ?, keywords = ?,
 		        updated_at = CURRENT_TIMESTAMP, version = ?
@@ -160,10 +229,24 @@ func (s *Store) UpdateNote(ctx context.Context, n *Note, reason string) error {
 		return fmt.Errorf("update note: %w", err)
 	}
 	n.Version = newVersion
-	return tx.Commit()
+	return nil
 }
 
-func (s *Store) ListNotes(ctx context.Context, kind string, limit, offset int) ([]*Note, error) {
+// UpdateNote runs the archive+update under a dedicated transaction so the two
+// writes stay atomic when called outside of an outer tx.
+func (s *Store) UpdateNote(ctx context.Context, n *Note, reason string) error {
+	return s.WithTx(ctx, func(tx *Tx) error {
+		return updateNoteInline(ctx, tx.tx, n, reason)
+	})
+}
+
+// UpdateNote on *Tx trusts the caller's outer transaction and doesn't open a
+// nested one.
+func (t *Tx) UpdateNote(ctx context.Context, n *Note, reason string) error {
+	return updateNoteInline(ctx, t.tx, n, reason)
+}
+
+func listNotes(ctx context.Context, q execer, kind string, limit, offset int) ([]*Note, error) {
 	query := `SELECT id, slug, title, kind, content, summary, keywords, created_at, updated_at, version
 	            FROM notes`
 	args := []any{}
@@ -174,7 +257,7 @@ func (s *Store) ListNotes(ctx context.Context, kind string, limit, offset int) (
 	query += ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -191,12 +274,19 @@ func (s *Store) ListNotes(ctx context.Context, kind string, limit, offset int) (
 	return out, rows.Err()
 }
 
+func (s *Store) ListNotes(ctx context.Context, kind string, limit, offset int) ([]*Note, error) {
+	return listNotes(ctx, s.db, kind, limit, offset)
+}
+func (t *Tx) ListNotes(ctx context.Context, kind string, limit, offset int) ([]*Note, error) {
+	return listNotes(ctx, t.tx, kind, limit, offset)
+}
+
 // ---------------------------------------------------------------------------
 // links
 // ---------------------------------------------------------------------------
 
-func (s *Store) CreateLink(ctx context.Context, l *Link) error {
-	res, err := s.db.ExecContext(ctx,
+func createLink(ctx context.Context, q execer, l *Link) error {
+	res, err := q.ExecContext(ctx,
 		`INSERT INTO links (from_note_id, from_source_id, to_note_id, to_source_id, kind, context)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		nullableInt(l.FromNoteID), nullableInt(l.FromSourceID),
@@ -214,8 +304,15 @@ func (s *Store) CreateLink(ctx context.Context, l *Link) error {
 	return nil
 }
 
-func (s *Store) LinksFromNote(ctx context.Context, noteID int64) ([]*Link, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *Store) CreateLink(ctx context.Context, l *Link) error {
+	return createLink(ctx, s.db, l)
+}
+func (t *Tx) CreateLink(ctx context.Context, l *Link) error {
+	return createLink(ctx, t.tx, l)
+}
+
+func linksFromNote(ctx context.Context, q execer, noteID int64) ([]*Link, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT id, from_note_id, from_source_id, to_note_id, to_source_id, kind, context
 		   FROM links WHERE from_note_id = ?`, noteID)
 	if err != nil {
@@ -225,8 +322,15 @@ func (s *Store) LinksFromNote(ctx context.Context, noteID int64) ([]*Link, error
 	return scanLinks(rows)
 }
 
-func (s *Store) LinksToNote(ctx context.Context, noteID int64) ([]*Link, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *Store) LinksFromNote(ctx context.Context, noteID int64) ([]*Link, error) {
+	return linksFromNote(ctx, s.db, noteID)
+}
+func (t *Tx) LinksFromNote(ctx context.Context, noteID int64) ([]*Link, error) {
+	return linksFromNote(ctx, t.tx, noteID)
+}
+
+func linksToNote(ctx context.Context, q execer, noteID int64) ([]*Link, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT id, from_note_id, from_source_id, to_note_id, to_source_id, kind, context
 		   FROM links WHERE to_note_id = ?`, noteID)
 	if err != nil {
@@ -236,12 +340,19 @@ func (s *Store) LinksToNote(ctx context.Context, noteID int64) ([]*Link, error) 
 	return scanLinks(rows)
 }
 
+func (s *Store) LinksToNote(ctx context.Context, noteID int64) ([]*Link, error) {
+	return linksToNote(ctx, s.db, noteID)
+}
+func (t *Tx) LinksToNote(ctx context.Context, noteID int64) ([]*Link, error) {
+	return linksToNote(ctx, t.tx, noteID)
+}
+
 // ---------------------------------------------------------------------------
 // chunks
 // ---------------------------------------------------------------------------
 
-func (s *Store) CreateChunk(ctx context.Context, c *Chunk) error {
-	res, err := s.db.ExecContext(ctx,
+func createChunk(ctx context.Context, q execer, c *Chunk) error {
+	res, err := q.ExecContext(ctx,
 		`INSERT INTO chunks (source_id, note_id, content, position, tokens)
 		 VALUES (?, ?, ?, ?, ?)`,
 		nullableInt(c.SourceID), nullableInt(c.NoteID),
@@ -258,20 +369,26 @@ func (s *Store) CreateChunk(ctx context.Context, c *Chunk) error {
 	return nil
 }
 
+func (s *Store) CreateChunk(ctx context.Context, c *Chunk) error {
+	return createChunk(ctx, s.db, c)
+}
+func (t *Tx) CreateChunk(ctx context.Context, c *Chunk) error {
+	return createChunk(ctx, t.tx, c)
+}
+
 // ---------------------------------------------------------------------------
 // FTS5 search index
 // ---------------------------------------------------------------------------
 
-// IndexNote upserts the note into search_index. The entity_ref is note:<id>.
-func (s *Store) IndexNote(ctx context.Context, n *Note) error {
+func indexNote(ctx context.Context, q execer, n *Note) error {
 	ref := fmt.Sprintf("note:%d", n.ID)
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := q.ExecContext(ctx,
 		`DELETE FROM search_index WHERE entity_ref = ?`, ref,
 	); err != nil {
 		return err
 	}
 	kw := strings.Join(n.Keywords, " ")
-	_, err := s.db.ExecContext(ctx,
+	_, err := q.ExecContext(ctx,
 		`INSERT INTO search_index (title, content, keywords, summary, kind, entity_ref)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		n.Title, n.Content, kw, n.Summary, n.Kind, ref,
@@ -279,19 +396,33 @@ func (s *Store) IndexNote(ctx context.Context, n *Note) error {
 	return err
 }
 
-func (s *Store) IndexChunk(ctx context.Context, c *Chunk, title string) error {
+func (s *Store) IndexNote(ctx context.Context, n *Note) error {
+	return indexNote(ctx, s.db, n)
+}
+func (t *Tx) IndexNote(ctx context.Context, n *Note) error {
+	return indexNote(ctx, t.tx, n)
+}
+
+func indexChunk(ctx context.Context, q execer, c *Chunk, title string) error {
 	ref := fmt.Sprintf("chunk:%d", c.ID)
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := q.ExecContext(ctx,
 		`DELETE FROM search_index WHERE entity_ref = ?`, ref,
 	); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := q.ExecContext(ctx,
 		`INSERT INTO search_index (title, content, keywords, summary, kind, entity_ref)
 		 VALUES (?, ?, '', '', 'chunk', ?)`,
 		title, c.Content, ref,
 	)
 	return err
+}
+
+func (s *Store) IndexChunk(ctx context.Context, c *Chunk, title string) error {
+	return indexChunk(ctx, s.db, c, title)
+}
+func (t *Tx) IndexChunk(ctx context.Context, c *Chunk, title string) error {
+	return indexChunk(ctx, t.tx, c, title)
 }
 
 // Search runs a BM25 query. Higher score = more relevant (we return -rank so
@@ -326,8 +457,8 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchHi
 // operations log
 // ---------------------------------------------------------------------------
 
-func (s *Store) LogOperation(ctx context.Context, op *Operation) error {
-	res, err := s.db.ExecContext(ctx,
+func logOperation(ctx context.Context, q execer, op *Operation) error {
+	res, err := q.ExecContext(ctx,
 		`INSERT INTO operations (kind, actor, summary, details)
 		 VALUES (?, ?, ?, ?)`,
 		op.Kind, op.Actor, op.Summary, nullStringJSON(op.Details),
@@ -341,6 +472,13 @@ func (s *Store) LogOperation(ctx context.Context, op *Operation) error {
 	}
 	op.ID = id
 	return nil
+}
+
+func (s *Store) LogOperation(ctx context.Context, op *Operation) error {
+	return logOperation(ctx, s.db, op)
+}
+func (t *Tx) LogOperation(ctx context.Context, op *Operation) error {
+	return logOperation(ctx, t.tx, op)
 }
 
 // ---------------------------------------------------------------------------
