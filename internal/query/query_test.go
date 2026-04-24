@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,9 +14,11 @@ import (
 type scriptedLLM struct {
 	responses []string
 	calls     int
+	requests  []llm.ChatRequest
 }
 
-func (s *scriptedLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+func (s *scriptedLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	s.requests = append(s.requests, req)
 	if s.calls >= len(s.responses) {
 		return &llm.ChatResponse{Content: s.responses[len(s.responses)-1]}, nil
 	}
@@ -164,6 +167,99 @@ func TestEngineEmptyResult(t *testing.T) {
 	}
 	if !strings.Contains(ans.Content, "No relevant") {
 		t.Errorf("unexpected answer for empty index: %q", ans.Content)
+	}
+}
+
+func TestSynthesizeReceivesFullNoteBody(t *testing.T) {
+	s := seedStore(t)
+	ctx := context.Background()
+
+	// The distinctive phrase lives only in Content; Summary and the 12-word
+	// FTS snippet around "scaling" will both miss it.
+	distinctive := "grep over markdown becomes unwieldy past a hundred notes"
+	n := &storage.Note{
+		Slug: "wiki-scaling", Title: "LLM Wiki scaling limits", Kind: "concept",
+		Content: "The LLM Wiki pattern hits a wall at scale. Specifically, " +
+			distinctive + ", and the model can no longer hold the full graph in its working context.",
+		Summary:  "Why the wiki pattern stops working beyond ~100 notes.",
+		Keywords: []string{"llm", "wiki", "scaling", "limits"},
+	}
+	if err := s.CreateNote(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IndexNote(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &scriptedLLM{responses: []string{
+		`{"queries":["llm wiki scaling","wiki pattern limits"]}`,
+		fmt.Sprintf(`{"ranked":["note:%d"]}`, n.ID),
+		"Because " + distinctive + ". [note:" + fmt.Sprint(n.ID) + "]\n\nSources: [note:" + fmt.Sprint(n.ID) + "]",
+	}}
+	eng := NewEngine(s, fake)
+	ans, err := eng.Run(ctx, "Why does the LLM Wiki pattern stop working at scale?")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// The synthesize call is the third LLM call in the pipeline.
+	if len(fake.requests) < 3 {
+		t.Fatalf("expected >=3 LLM calls, got %d", len(fake.requests))
+	}
+	synthReq := fake.requests[len(fake.requests)-1]
+	var userContent string
+	for _, m := range synthReq.Messages {
+		if m.Role == llm.RoleUser {
+			userContent = m.Content
+		}
+	}
+	if !strings.Contains(userContent, distinctive) {
+		t.Errorf("synthesize prompt missing full note body.\nGot:\n%s", userContent)
+	}
+
+	// The hydrated Candidate that the engine returns should carry FullContent.
+	if len(ans.Candidates) == 0 || ans.Candidates[0].FullContent == "" {
+		t.Errorf("expected top candidate to have FullContent set, got %+v", ans.Candidates)
+	}
+}
+
+func TestEnforceContextBudgetTruncatesLongestFirst(t *testing.T) {
+	cands := []Candidate{
+		{EntityRef: "note:1", FullContent: strings.Repeat("a", 200)},
+		{EntityRef: "note:2", FullContent: strings.Repeat("b", 50)},
+		{EntityRef: "note:3", FullContent: strings.Repeat("c", 1000)},
+	}
+	out := enforceContextBudget(cands, 300)
+
+	total := 0
+	for _, c := range out {
+		total += len(c.FullContent)
+	}
+	if total > 300 {
+		t.Errorf("total %d exceeds budget 300", total)
+	}
+	// The 50-char candidate should remain untouched; the longest must shrink.
+	if out[1].FullContent != strings.Repeat("b", 50) {
+		t.Errorf("short candidate was mutated: %q", out[1].FullContent)
+	}
+	if len(out[2].FullContent) >= 1000 {
+		t.Errorf("longest candidate was not truncated: len=%d", len(out[2].FullContent))
+	}
+}
+
+func TestTruncateStringPreservesUTF8(t *testing.T) {
+	// "è" is 2 bytes; cutting at an odd byte must not emit a broken rune.
+	in := "perché così è"
+	got := truncateString(in, 9)
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("expected ellipsis suffix, got %q", got)
+	}
+	// Stripped of the ellipsis, the prefix must be valid UTF-8.
+	prefix := strings.TrimSuffix(got, "…")
+	for _, r := range prefix {
+		if r == '\uFFFD' {
+			t.Errorf("invalid rune in truncated output: %q", got)
+		}
 	}
 }
 

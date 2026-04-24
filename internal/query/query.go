@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/MatteoAdamo82/loom/internal/llm"
 	"github.com/MatteoAdamo82/loom/internal/storage"
@@ -16,11 +18,23 @@ type Candidate struct {
 	EntityRef string
 	Title     string
 	Snippet   string
-	Score     float64
-	Kind      string
-	NoteID    int64 // 0 when the hit isn't a note
-	SourceID  int64 // 0 when the hit isn't a source/chunk-from-source
+	// FullContent is the hydrated body loaded after rerank — the actual note
+	// content, source excerpt, or chunk text that synthesis should ground on.
+	// Empty until hydrateContent runs; Synthesize falls back to Snippet.
+	FullContent string
+	Score       float64
+	Kind        string
+	NoteID      int64 // 0 when the hit isn't a note
+	SourceID    int64 // 0 when the hit isn't a source/chunk-from-source
 }
+
+// Source content is trimmed during hydration so a single large document can't
+// monopolize the synthesis context.
+const sourceCharBudget = 1500
+
+// Total budget across all hydrated candidates; longest candidates are shrunk
+// first so short ones stay intact.
+const contextCharBudget = 8000
 
 type Answer struct {
 	Question string
@@ -112,7 +126,12 @@ func (e *Engine) Run(ctx context.Context, question string) (*Answer, error) {
 		return nil, err
 	}
 
-	// 5. Synthesize.
+	// 5. Hydrate: load full bodies so synthesis sees actual content, not
+	//    12-word FTS snippets.
+	ranked = e.hydrateContent(ctx, ranked)
+	ranked = enforceContextBudget(ranked, contextCharBudget)
+
+	// 6. Synthesize.
 	content, err := Synthesize(ctx, e.LLM, question, ranked)
 	if err != nil {
 		return nil, err
@@ -123,7 +142,7 @@ func (e *Engine) Run(ctx context.Context, question string) (*Answer, error) {
 		citations = append(citations, Citation{EntityRef: c.EntityRef, Title: c.Title})
 	}
 
-	// 6. Log.
+	// 7. Log.
 	details, _ := json.Marshal(map[string]any{
 		"question":    question,
 		"expanded":    queries,
@@ -236,6 +255,114 @@ func (e *Engine) graphBoost(ctx context.Context, in []Candidate) ([]Candidate, e
 		}
 	}
 	return out, nil
+}
+
+// hydrateContent fills Candidate.FullContent from the store so synthesis has
+// the actual note body (not the 12-word FTS snippet). Errors on individual
+// loads are swallowed: the caller falls back to Snippet rather than failing
+// the whole query.
+func (e *Engine) hydrateContent(ctx context.Context, in []Candidate) []Candidate {
+	out := make([]Candidate, len(in))
+	copy(out, in)
+	for i := range out {
+		c := &out[i]
+		switch {
+		case c.NoteID != 0:
+			n, err := e.Store.GetNote(ctx, c.NoteID)
+			if err == nil {
+				c.FullContent = n.Content
+			}
+		case c.SourceID != 0:
+			src, err := e.Store.GetSource(ctx, c.SourceID)
+			if err == nil {
+				c.FullContent = truncateString(src.Content, sourceCharBudget)
+			}
+		case strings.HasPrefix(c.EntityRef, "chunk:"):
+			var id int64
+			if _, err := fmt.Sscanf(c.EntityRef, "chunk:%d", &id); err != nil || id == 0 {
+				continue
+			}
+			ch, err := e.Store.GetChunk(ctx, id)
+			if err == nil {
+				c.FullContent = ch.Content
+			}
+		}
+	}
+	return out
+}
+
+// enforceContextBudget caps the combined FullContent across candidates at
+// budget characters. It applies a water-filling strategy: candidates shorter
+// than their fair share keep their body intact, while the longest absorb the
+// truncation. This preserves diversity across sources instead of letting one
+// large note starve the rest.
+func enforceContextBudget(cands []Candidate, budget int) []Candidate {
+	if budget <= 0 || len(cands) == 0 {
+		return cands
+	}
+	total := 0
+	for _, c := range cands {
+		total += len(c.FullContent)
+	}
+	if total <= budget {
+		return cands
+	}
+
+	order := make([]int, len(cands))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return len(cands[order[a]].FullContent) < len(cands[order[b]].FullContent)
+	})
+
+	remaining := budget
+	remainingCount := len(cands)
+	for _, i := range order {
+		fair := remaining / remainingCount
+		if len(cands[i].FullContent) > fair {
+			cands[i].FullContent = truncateString(cands[i].FullContent, fair)
+		}
+		remaining -= len(cands[i].FullContent)
+		remainingCount--
+	}
+	return cands
+}
+
+// truncateString cuts s to at most n bytes total — including a trailing
+// ellipsis when truncation happened — at a valid UTF-8 rune boundary.
+// Returns s unchanged when already short enough.
+func truncateString(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	const ellipsis = "…"
+	budget := n - len(ellipsis)
+	if budget <= 0 {
+		// Budget too small to fit the marker; byte-truncate at a rune boundary.
+		return utf8Prefix(s, n)
+	}
+	return utf8Prefix(s, budget) + ellipsis
+}
+
+// utf8Prefix returns the longest prefix of s whose length is ≤ n bytes and
+// ends on a rune boundary.
+func utf8Prefix(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	i := 0
+	for i < n {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		if size == 0 || i+size > n {
+			break
+		}
+		i += size
+	}
+	return s[:i]
 }
 
 func toCandidate(h storage.SearchHit) Candidate {

@@ -330,6 +330,35 @@ func TestWithTxRollsBackOnError(t *testing.T) {
 	}
 }
 
+func TestChunkRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src := &Source{URI: "file:///x.md", Kind: "md", Title: "X", Content: "body", Hash: "h1"}
+	if err := s.CreateSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	c := &Chunk{SourceID: &src.ID, Content: "first slice of text", Position: 0, Tokens: 4}
+	if err := s.CreateChunk(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetChunk(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("get chunk: %v", err)
+	}
+	if got.Content != c.Content || got.Position != 0 {
+		t.Errorf("round-trip mismatch: %+v", got)
+	}
+	if got.SourceID == nil || *got.SourceID != src.ID {
+		t.Errorf("source id not preserved: %+v", got.SourceID)
+	}
+
+	if _, err := s.GetChunk(ctx, 999999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing chunk: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestLogOperation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

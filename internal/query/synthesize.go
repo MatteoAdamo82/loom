@@ -32,7 +32,16 @@ func Synthesize(ctx context.Context, client llm.Client, question string, candida
 	}
 	var b strings.Builder
 	for _, c := range candidates {
-		fmt.Fprintf(&b, "- %s [%s]: %s\n", c.Title, c.EntityRef, c.Snippet)
+		body := c.FullContent
+		if body == "" {
+			body = c.Snippet
+		}
+		body = strings.TrimSpace(body)
+		if strings.ContainsRune(body, '\n') {
+			fmt.Fprintf(&b, "- %s [%s]:\n%s\n\n", c.Title, c.EntityRef, body)
+		} else {
+			fmt.Fprintf(&b, "- %s [%s]: %s\n", c.Title, c.EntityRef, body)
+		}
 	}
 
 	resp, err := client.Chat(ctx, llm.ChatRequest{

@@ -376,6 +376,40 @@ func (t *Tx) CreateChunk(ctx context.Context, c *Chunk) error {
 	return createChunk(ctx, t.tx, c)
 }
 
+func getChunk(ctx context.Context, q execer, id int64) (*Chunk, error) {
+	row := q.QueryRowContext(ctx,
+		`SELECT id, source_id, note_id, content, position, tokens
+		   FROM chunks WHERE id = ?`, id)
+	var c Chunk
+	var srcID, noteID, tokens sql.NullInt64
+	err := row.Scan(&c.ID, &srcID, &noteID, &c.Content, &c.Position, &tokens)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if srcID.Valid {
+		v := srcID.Int64
+		c.SourceID = &v
+	}
+	if noteID.Valid {
+		v := noteID.Int64
+		c.NoteID = &v
+	}
+	if tokens.Valid {
+		c.Tokens = int(tokens.Int64)
+	}
+	return &c, nil
+}
+
+func (s *Store) GetChunk(ctx context.Context, id int64) (*Chunk, error) {
+	return getChunk(ctx, s.db, id)
+}
+func (t *Tx) GetChunk(ctx context.Context, id int64) (*Chunk, error) {
+	return getChunk(ctx, t.tx, id)
+}
+
 // ---------------------------------------------------------------------------
 // FTS5 search index
 // ---------------------------------------------------------------------------
