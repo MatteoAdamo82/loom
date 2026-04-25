@@ -10,6 +10,7 @@ import (
 
 func cmdQuery(configPath *string) *cobra.Command {
 	var showDebug bool
+	var format string
 	c := &cobra.Command{
 		Use:   "query <question>",
 		Short: "Ask a question against the knowledge base.",
@@ -31,6 +32,7 @@ func cmdQuery(configPath *string) *cobra.Command {
 				BM25TopK:       rt.Cfg.Query.BM25TopK,
 				GraphExpandHop: rt.Cfg.Query.GraphExpandHop,
 				RerankTopK:     rt.Cfg.Query.RerankTopK,
+				Format:         query.ParseFormat(format),
 			}
 
 			question := strings.Join(args, " ")
@@ -54,5 +56,7 @@ func cmdQuery(configPath *string) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&showDebug, "debug", false, "print expansion and reranked candidates")
+	c.Flags().StringVar(&format, "format", "markdown",
+		"answer format: markdown (default) | marp | text")
 	return c
 }

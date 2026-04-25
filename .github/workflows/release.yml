@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # Run JavaScript actions on Node 24. Removes the deprecation warning that
+  # GitHub will turn into a hard requirement on 2026-06-02.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   cli-binaries:
     name: CLI binaries (goreleaser)

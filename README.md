@@ -8,6 +8,9 @@ with the speed and precision of traditional RAG, using only **SQLite + FTS5
 (BM25) + an LLM** — no vector databases, no embedding models, no ML libraries.
 
 [![CI](https://github.com/MatteoAdamo82/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/MatteoAdamo82/loom/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/MatteoAdamo82/loom?sort=semver)](https://github.com/MatteoAdamo82/loom/releases/latest)
+[![Homebrew tap](https://img.shields.io/badge/homebrew-MatteoAdamo82%2Floom-orange)](https://github.com/MatteoAdamo82/homebrew-loom)
+[![Go report](https://goreportcard.com/badge/github.com/MatteoAdamo82/loom)](https://goreportcard.com/report/github.com/MatteoAdamo82/loom)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -121,11 +124,18 @@ loom ingest paper.pdf article.md https://example.com/page.html
 
 # 4. Ask
 loom query "what does paper.pdf say about scaling laws?"
+loom query --format=marp "summarise the LLM Wiki pattern" > deck.md   # Marp slide deck
+loom query --format=text "who proposed the Memex?" | tee answer.txt   # plain prose
 
 # 5. Inspect
 loom notes                        # list all notes
 loom note <slug>                  # show one note with backlinks
 loom lint                         # find orphans, duplicates, gaps
+
+# 6. Niceties
+loom config show                  # print effective TOML
+loom config edit                  # open ~/.loom/config.toml in $EDITOR
+loom completion zsh > _loom       # shell completion (bash/zsh/fish/powershell)
 ```
 
 ## Configuration

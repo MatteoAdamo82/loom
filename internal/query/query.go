@@ -55,6 +55,9 @@ type Config struct {
 	RerankTopK     int
 	Model          string
 	RerankModel    string
+	// Format controls the synthesized answer's shape (markdown, marp, text).
+	// Empty defaults to FormatMarkdown.
+	Format Format
 }
 
 func (c Config) withDefaults() Config {
@@ -132,7 +135,7 @@ func (e *Engine) Run(ctx context.Context, question string) (*Answer, error) {
 	ranked = enforceContextBudget(ranked, contextCharBudget)
 
 	// 6. Synthesize.
-	content, err := Synthesize(ctx, e.LLM, question, ranked)
+	content, err := Synthesize(ctx, e.LLM, question, ranked, cfg.Format)
 	if err != nil {
 		return nil, err
 	}

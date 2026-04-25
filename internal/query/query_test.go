@@ -263,6 +263,81 @@ func TestTruncateStringPreservesUTF8(t *testing.T) {
 	}
 }
 
+func TestParseFormat(t *testing.T) {
+	cases := map[string]Format{
+		"":                FormatMarkdown,
+		"markdown":        FormatMarkdown,
+		"MARKDOWN":        FormatMarkdown,
+		"  marp  ":        FormatMarp,
+		"slides":          FormatMarp,
+		"presentation":    FormatMarp,
+		"text":            FormatText,
+		"plain":           FormatText,
+		"unknown-thing":   FormatMarkdown, // safe fallback
+	}
+	for in, want := range cases {
+		if got := ParseFormat(in); got != want {
+			t.Errorf("ParseFormat(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSynthesizeMarpUsesSlideSystemPrompt(t *testing.T) {
+	fake := &scriptedLLM{responses: []string{
+		"---\nmarp: true\ntheme: default\npaginate: true\n---\n\n# Slide 1\n\n---\n\n## Body [note:1]",
+	}}
+	cands := []Candidate{
+		{EntityRef: "note:1", Title: "T", FullContent: "body sentence."},
+	}
+	out, err := Synthesize(context.Background(), fake, "q?", cands, FormatMarp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "marp: true") {
+		t.Errorf("Marp synth output missing frontmatter: %q", out)
+	}
+
+	// The first request must have used the Marp system prompt.
+	if len(fake.requests) == 0 {
+		t.Fatal("no LLM call captured")
+	}
+	var sysContent string
+	for _, m := range fake.requests[0].Messages {
+		if m.Role == llm.RoleSystem {
+			sysContent = m.Content
+			break
+		}
+	}
+	if !strings.Contains(sysContent, "Marp presentation") {
+		t.Errorf("Marp format should select the Marp system prompt; got %q", sysContent)
+	}
+}
+
+func TestSynthesizeTextStripsCitations(t *testing.T) {
+	fake := &scriptedLLM{responses: []string{"plain prose answer."}}
+	cands := []Candidate{{EntityRef: "note:1", Title: "T", FullContent: "x"}}
+	if _, err := Synthesize(context.Background(), fake, "q?", cands, FormatText); err != nil {
+		t.Fatal(err)
+	}
+	var sysContent string
+	for _, m := range fake.requests[0].Messages {
+		if m.Role == llm.RoleSystem {
+			sysContent = m.Content
+			break
+		}
+	}
+	if !strings.Contains(sysContent, "no citations") {
+		t.Errorf("Text format should instruct no citations; got %q", sysContent)
+	}
+}
+
+func TestSynthesizeEmptyCandidatesUsesFormatStub(t *testing.T) {
+	out, _ := Synthesize(context.Background(), &scriptedLLM{}, "q", nil, FormatMarp)
+	if !strings.Contains(out, "marp: true") {
+		t.Errorf("empty Marp answer should still be a valid Marp doc, got %q", out)
+	}
+}
+
 func TestSanitizeFTSQuery(t *testing.T) {
 	cases := map[string]string{
 		"hello world":    `"hello" OR "world"`,

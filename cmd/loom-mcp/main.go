@@ -25,12 +25,62 @@ import (
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 var Version = "dev"
 
+const usage = `loom-mcp — Model Context Protocol stdio server for Loom.
+
+Usage:
+  loom-mcp [--config <path>]
+  loom-mcp --help
+  loom-mcp --version
+
+Flags:
+  --config <path>   Path to the Loom TOML config (default: ~/.loom/config.toml,
+                    or whatever LOOM_CONFIG points at).
+  --help, -h        Show this help and exit.
+  --version, -v     Print the binary version and exit.
+
+This binary speaks the Model Context Protocol over stdio. It is not meant to
+be run interactively. To use it, register loom-mcp in an MCP client config:
+
+  ~/.claude/settings.json:
+  {
+    "mcpServers": {
+      "loom": {
+        "command": "loom-mcp",
+        "args": ["--config", "/Users/you/.loom/config.toml"]
+      }
+    }
+  }
+
+Or run it through Anthropic's MCP Inspector for interactive testing:
+
+  npx @modelcontextprotocol/inspector loom-mcp --config ~/.loom/config.toml
+
+Tools exposed to the client:
+  loom.ingest        Add a file (txt, md, pdf, html, http/https URL).
+  loom.query         Hybrid retrieval + synthesized answer with citations.
+  loom.search        Raw BM25 hits without LLM expansion.
+  loom.get_note      Fetch a single note by slug.
+  loom.list_notes    Browse notes, optionally filtered by kind.
+  loom.lint          Hygiene checks: orphans, near-duplicates, source gaps.
+`
+
 func main() {
 	configPath := os.Getenv("LOOM_CONFIG")
-	for i, a := range os.Args[1:] {
-		if a == "--config" && i+1 < len(os.Args[1:]) {
-			configPath = os.Args[i+2]
-		} else if strings.HasPrefix(a, "--config=") {
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--help", a == "-h":
+			fmt.Print(usage)
+			return
+		case a == "--version", a == "-v":
+			fmt.Printf("loom-mcp version %s\n", Version)
+			return
+		case a == "--config":
+			if i+1 < len(args) {
+				configPath = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, "--config="):
 			configPath = strings.TrimPrefix(a, "--config=")
 		}
 	}
@@ -108,6 +158,10 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 				mcp.Description("Max number of candidates the synthesizer sees (default: 8)"),
 				mcp.Min(1), mcp.Max(50),
 			),
+			mcp.WithString("format",
+				mcp.Description("Answer format: markdown (default), marp (Marp slide deck), or text (plain prose, no citations)"),
+				mcp.Enum("markdown", "marp", "text"),
+			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			question, err := req.RequireString("question")
@@ -119,6 +173,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 				BM25TopK:       cfg.Query.BM25TopK,
 				GraphExpandHop: cfg.Query.GraphExpandHop,
 				RerankTopK:     cfg.Query.RerankTopK,
+				Format:         query.ParseFormat(req.GetString("format", "")),
 			}
 			if v := req.GetFloat("top_k", 0); v > 0 {
 				eng.Cfg.RerankTopK = int(v)
