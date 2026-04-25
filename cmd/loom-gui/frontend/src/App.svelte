@@ -6,11 +6,14 @@
   import NoteView from "./lib/NoteView.svelte";
   import ChatPanel from "./lib/ChatPanel.svelte";
   import LintPanel from "./lib/LintPanel.svelte";
+  import Settings from "./lib/Settings.svelte";
+
+  type Tab = "note" | "chat" | "lint" | "settings";
 
   let status: Status | null = null;
   let notes: NoteSummary[] = [];
   let selectedSlug: string | null = null;
-  let tab: "note" | "chat" | "lint" = "chat";
+  let tab: Tab = "chat";
   let ingesting = false;
   let toast: { kind: "info" | "error"; text: string } | null = null;
 
@@ -88,15 +91,24 @@
 
 {#if !status}
   <div class="boot">connecting…</div>
-{:else if !status.ok}
+{:else if !status.ok && tab !== "settings"}
   <div class="boot error">
     <h2>Loom failed to start</h2>
     <p>{status.error}</p>
     {#if status.config_path}
       <p class="dim">config: <code>{status.config_path}</code></p>
     {/if}
-    <button on:click={reload}>retry</button>
+    <div class="boot-actions">
+      <button class="primary" on:click={() => (tab = "settings")}>open settings</button>
+      <button on:click={reload}>retry</button>
+    </div>
   </div>
+{:else if tab === "settings"}
+  <main class="single">
+    <section class="panel">
+      <Settings onSaved={async () => { await refreshStatus(); await refreshNotes(); }} />
+    </section>
+  </main>
 {:else}
   <main>
     <NoteList
@@ -156,10 +168,24 @@
     grid-template-columns: 320px 1fr;
     overflow: hidden;
   }
+  main.single {
+    grid-template-columns: 1fr;
+  }
   .panel {
     overflow-y: auto;
     border-left: 1px solid var(--border);
     background: var(--panel-2);
+  }
+  main.single .panel { border-left: none; }
+  .boot-actions {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 1rem;
+  }
+  .boot button.primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
   }
 
   .boot {

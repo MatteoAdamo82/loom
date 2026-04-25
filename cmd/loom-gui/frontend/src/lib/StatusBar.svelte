@@ -5,7 +5,7 @@
   export let onIngest: () => void = () => {};
   export let onReload: () => void = () => {};
 
-  type Tab = "note" | "chat" | "lint";
+  type Tab = "note" | "chat" | "lint" | "settings";
   export let tab: Tab = "chat";
   export let onTab: (t: Tab) => void = () => {};
 </script>
@@ -26,10 +26,16 @@
   </nav>
 
   <div class="actions">
-    <button on:click={onIngest} disabled={busy}>
+    <button on:click={onIngest} disabled={busy} title="ingest a file">
       {busy ? "ingesting…" : "+ ingest"}
     </button>
     <button on:click={onReload} title="reload config + reopen DB">reload</button>
+    <button
+      class="icon"
+      class:active={tab === "settings"}
+      on:click={() => onTab("settings")}
+      title="settings"
+      aria-label="settings">⚙</button>
   </div>
 </header>
 
@@ -102,4 +108,14 @@
   }
   .actions button:hover { background: var(--accent-soft); }
   .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .actions button.icon {
+    padding: 0.35rem 0.55rem;
+    font-size: 1rem;
+    line-height: 1;
+  }
+  .actions button.icon.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
 </style>

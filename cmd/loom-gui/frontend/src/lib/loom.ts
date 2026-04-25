@@ -77,6 +77,20 @@ export type LintReport = {
   findings: LintFinding[];
 };
 
+export type Settings = {
+  config_path: string;
+  provider: string;
+  model: string;
+  endpoint: string;
+  api_key_env: string;
+  error?: string;
+};
+
+export type OllamaModel = {
+  name: string;
+  size: number;
+};
+
 export type AnswerFormat = "markdown" | "marp" | "text";
 
 // At runtime Wails injects window.go.main.App with our methods.
@@ -89,6 +103,9 @@ type Bindings = {
   PickAndIngest(): Promise<Ingested | null>;
   IngestPath(path: string): Promise<Ingested>;
   Lint(): Promise<LintReport>;
+  Settings(): Promise<Settings>;
+  SaveSettings(provider: string, model: string, endpoint: string, apiKeyEnv: string): Promise<Status>;
+  ListOllamaModels(endpoint: string): Promise<OllamaModel[] | null>;
 };
 
 // Wails also injects window.runtime with EventsOn / EventsOff helpers used to
@@ -127,6 +144,10 @@ export const Loom = {
   pickAndIngest: () => api().PickAndIngest(),
   ingestPath: (path: string) => api().IngestPath(path),
   lint: () => api().Lint(),
+  settings: () => api().Settings(),
+  saveSettings: (provider: string, model: string, endpoint: string, apiKeyEnv: string) =>
+    api().SaveSettings(provider, model, endpoint, apiKeyEnv),
+  listOllamaModels: (endpoint = "") => api().ListOllamaModels(endpoint),
   // onAnswerChunk subscribes a callback to incoming token deltas. Returns an
   // unsubscribe function. Safe to call before or after Ask() — Wails buffers
   // events until a listener is registered.

@@ -83,6 +83,20 @@ func DefaultPath() string {
 	return filepath.Join(home, ".loom", "config.toml")
 }
 
+// Save writes cfg to path as TOML, creating the parent directory if it
+// doesn't exist. Used by `loom init` and the GUI settings panel.
+func Save(cfg *Config, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("ensure config dir: %w", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create config: %w", err)
+	}
+	defer f.Close()
+	return toml.NewEncoder(f).Encode(cfg)
+}
+
 // Load reads config from path, merging values over Default(). A missing file
 // is not an error — defaults are returned and the path is remembered so a
 // later Save() can create it.

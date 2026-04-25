@@ -4,12 +4,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MatteoAdamo82/loom/internal/config"
 	"github.com/MatteoAdamo82/loom/internal/ingest"
@@ -154,6 +158,20 @@ type IngestVM struct {
 type LintReportVM struct {
 	Stats    lint.Stats     `json:"stats"`
 	Findings []lint.Finding `json:"findings"`
+}
+
+// SettingsVM mirrors the user-editable section of the TOML config. We only
+// expose the LLM block for now; chunking / query knobs stay TOML-only since
+// they're rarely tweaked from a GUI.
+type SettingsVM struct {
+	ConfigPath string `json:"config_path"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Endpoint   string `json:"endpoint"`
+	APIKeyEnv  string `json:"api_key_env"`
+	// Bootstrap reports the live state. Empty Error means the engine started
+	// fine; otherwise the form should still render so the user can fix it.
+	Error string `json:"error,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +377,106 @@ func (a *App) IngestPath(path string) (*IngestVM, error) {
 		return nil, err
 	}
 	return ingestResultVM(res), nil
+}
+
+// Settings returns the on-disk LLM configuration so the UI can pre-populate
+// the form. It works even when the engine failed to bootstrap so the user can
+// always recover from a bad config (e.g. a missing model name).
+func (a *App) Settings() (*SettingsVM, error) {
+	cfg, err := config.Load(a.cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.RLock()
+	bootErr := a.loadErr
+	a.mu.RUnlock()
+	return &SettingsVM{
+		ConfigPath: a.cfgPath,
+		Provider:   cfg.LLM.Provider,
+		Model:      cfg.LLM.Model,
+		Endpoint:   cfg.LLM.Endpoint,
+		APIKeyEnv:  cfg.LLM.APIKeyEnv,
+		Error:      bootErr,
+	}, nil
+}
+
+// SaveSettings rewrites the LLM block of the TOML config and re-runs
+// bootstrap. The caller gets back the new live status.
+func (a *App) SaveSettings(provider, model, endpoint, apiKeyEnv string) (StatusVM, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
+	case "ollama", "openai", "anthropic":
+	default:
+		return StatusVM{}, fmt.Errorf("unsupported provider %q (want ollama|openai|anthropic)", provider)
+	}
+	if strings.TrimSpace(model) == "" {
+		return StatusVM{}, errors.New("model is required")
+	}
+
+	cfg, err := config.Load(a.cfgPath)
+	if err != nil {
+		return StatusVM{}, err
+	}
+	cfg.LLM.Provider = provider
+	cfg.LLM.Model = strings.TrimSpace(model)
+	cfg.LLM.Endpoint = strings.TrimSpace(endpoint)
+	cfg.LLM.APIKeyEnv = strings.TrimSpace(apiKeyEnv)
+
+	if err := config.Save(cfg, a.cfgPath); err != nil {
+		return StatusVM{}, err
+	}
+	return a.Reload(), nil
+}
+
+// OllamaModel is one entry from /api/tags.
+type OllamaModel struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+// ListOllamaModels queries the configured Ollama endpoint (or the explicit
+// endpoint argument) for the locally available models. Used by the GUI to
+// pre-populate a dropdown so users don't have to remember model names.
+// Returns an empty slice (not an error) if Ollama isn't reachable — the form
+// should fall back to a free-text input in that case.
+func (a *App) ListOllamaModels(endpoint string) []OllamaModel {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		a.mu.RLock()
+		if a.cfg != nil {
+			endpoint = a.cfg.LLM.Endpoint
+		}
+		a.mu.RUnlock()
+	}
+	if endpoint == "" {
+		endpoint = "http://localhost:11434"
+	}
+	endpoint = strings.TrimRight(endpoint, "/")
+
+	hc := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequestWithContext(a.ctx, http.MethodGet, endpoint+"/api/tags", nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := hc.Do(req)
+	if err != nil || resp.StatusCode >= 400 {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Models []OllamaModel `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil
+	}
+	sort.Slice(body.Models, func(i, j int) bool {
+		return body.Models[i].Name < body.Models[j].Name
+	})
+	return body.Models
 }
 
 func (a *App) Lint() (*LintReportVM, error) {
