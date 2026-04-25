@@ -77,6 +77,10 @@ type Engine struct {
 	Store *storage.Store
 	LLM   llm.Client
 	Cfg   Config
+	// OnSynthesisChunk, when non-nil, receives successive content deltas
+	// from the synthesis step as they arrive from the LLM. Wire this from
+	// the CLI to render tokens live; leave nil to keep Run() blocking.
+	OnSynthesisChunk func(string)
 }
 
 func NewEngine(store *storage.Store, client llm.Client) *Engine {
@@ -135,7 +139,7 @@ func (e *Engine) Run(ctx context.Context, question string) (*Answer, error) {
 	ranked = enforceContextBudget(ranked, contextCharBudget)
 
 	// 6. Synthesize.
-	content, err := Synthesize(ctx, e.LLM, question, ranked, cfg.Format)
+	content, err := Synthesize(ctx, e.LLM, question, ranked, cfg.Format, e.OnSynthesisChunk)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 func cmdQuery(configPath *string) *cobra.Command {
 	var showDebug bool
 	var format string
+	var noStream bool
 	c := &cobra.Command{
 		Use:   "query <question>",
 		Short: "Ask a question against the knowledge base.",
@@ -35,14 +36,35 @@ func cmdQuery(configPath *string) *cobra.Command {
 				Format:         query.ParseFormat(format),
 			}
 
+			out := cmd.OutOrStdout()
+			streaming := !noStream
+			var streamed bool
+			if streaming {
+				eng.OnSynthesisChunk = func(s string) {
+					streamed = true
+					_, _ = fmt.Fprint(out, s)
+					if f, ok := out.(interface{ Sync() error }); ok {
+						_ = f.Sync()
+					}
+				}
+			}
+
 			question := strings.Join(args, " ")
 			ans, err := eng.Run(cliContext(cmd), question)
 			if err != nil {
+				if streamed {
+					fmt.Fprintln(out)
+				}
 				return err
 			}
 
-			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, ans.Content)
+			if streamed {
+				// Streamed output already wrote the content to stdout — just
+				// terminate the line.
+				fmt.Fprintln(out)
+			} else {
+				fmt.Fprintln(out, ans.Content)
+			}
 
 			if showDebug {
 				fmt.Fprintln(out, "\n---")
@@ -58,5 +80,7 @@ func cmdQuery(configPath *string) *cobra.Command {
 	c.Flags().BoolVar(&showDebug, "debug", false, "print expansion and reranked candidates")
 	c.Flags().StringVar(&format, "format", "markdown",
 		"answer format: markdown (default) | marp | text")
+	c.Flags().BoolVar(&noStream, "no-stream", false,
+		"buffer the full answer before printing instead of streaming tokens live")
 	return c
 }

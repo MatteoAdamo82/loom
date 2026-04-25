@@ -96,3 +96,60 @@ func TestOllamaDefaultEndpoint(t *testing.T) {
 		t.Errorf("default endpoint = %q", c.cfg.Endpoint)
 	}
 }
+
+func TestOllamaStreamEmitsChunksAndAggregates(t *testing.T) {
+	frames := []string{
+		`{"model":"llama3.1:8b","message":{"role":"assistant","content":"Hello "},"done":false}`,
+		`{"model":"llama3.1:8b","message":{"role":"assistant","content":"world"},"done":false}`,
+		`{"model":"llama3.1:8b","message":{"role":"assistant","content":"!"},"done":true,"prompt_eval_count":7,"eval_count":3}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		flusher, _ := w.(http.Flusher)
+		for _, f := range frames {
+			_, _ = w.Write([]byte(f + "\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := NewOllama(OllamaConfig{Endpoint: srv.URL, Model: "llama3.1:8b"})
+
+	var chunks []string
+	resp, err := c.Stream(context.Background(), ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	}, func(s string) {
+		chunks = append(chunks, s)
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := strings.Join(chunks, ""); got != "Hello world!" {
+		t.Errorf("chunk concat = %q, want %q", got, "Hello world!")
+	}
+	if resp.Content != "Hello world!" {
+		t.Errorf("response content = %q", resp.Content)
+	}
+	if resp.PromptTokens != 7 || resp.OutputTokens != 3 {
+		t.Errorf("token counts = %d / %d", resp.PromptTokens, resp.OutputTokens)
+	}
+	if len(chunks) != 3 {
+		t.Errorf("expected 3 separate chunks, got %d: %v", len(chunks), chunks)
+	}
+}
+
+func TestOllamaStreamErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := NewOllama(OllamaConfig{Endpoint: srv.URL, Model: "m"})
+	_, err := c.Stream(context.Background(), ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "x"}},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "500") {
+		t.Errorf("expected 500 in error, got %v", err)
+	}
+}

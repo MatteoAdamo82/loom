@@ -289,7 +289,7 @@ func TestSynthesizeMarpUsesSlideSystemPrompt(t *testing.T) {
 	cands := []Candidate{
 		{EntityRef: "note:1", Title: "T", FullContent: "body sentence."},
 	}
-	out, err := Synthesize(context.Background(), fake, "q?", cands, FormatMarp)
+	out, err := Synthesize(context.Background(), fake, "q?", cands, FormatMarp, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestSynthesizeMarpUsesSlideSystemPrompt(t *testing.T) {
 func TestSynthesizeTextStripsCitations(t *testing.T) {
 	fake := &scriptedLLM{responses: []string{"plain prose answer."}}
 	cands := []Candidate{{EntityRef: "note:1", Title: "T", FullContent: "x"}}
-	if _, err := Synthesize(context.Background(), fake, "q?", cands, FormatText); err != nil {
+	if _, err := Synthesize(context.Background(), fake, "q?", cands, FormatText, nil); err != nil {
 		t.Fatal(err)
 	}
 	var sysContent string
@@ -332,9 +332,69 @@ func TestSynthesizeTextStripsCitations(t *testing.T) {
 }
 
 func TestSynthesizeEmptyCandidatesUsesFormatStub(t *testing.T) {
-	out, _ := Synthesize(context.Background(), &scriptedLLM{}, "q", nil, FormatMarp)
+	out, _ := Synthesize(context.Background(), &scriptedLLM{}, "q", nil, FormatMarp, nil)
 	if !strings.Contains(out, "marp: true") {
 		t.Errorf("empty Marp answer should still be a valid Marp doc, got %q", out)
+	}
+}
+
+// streamingFake is a scriptedLLM that also implements llm.Streamer by chopping
+// the canned response into one-character chunks.
+type streamingFake struct {
+	scriptedLLM
+}
+
+func (s *streamingFake) Stream(_ context.Context, req llm.ChatRequest, onChunk func(string)) (*llm.ChatResponse, error) {
+	s.requests = append(s.requests, req)
+	resp := s.responses[s.calls]
+	s.calls++
+	for _, r := range resp {
+		if onChunk != nil {
+			onChunk(string(r))
+		}
+	}
+	return &llm.ChatResponse{Content: resp}, nil
+}
+
+func TestSynthesizeStreamsWhenClientImplementsStreamer(t *testing.T) {
+	full := "Loom answer arrives token by token."
+	fake := &streamingFake{scriptedLLM: scriptedLLM{responses: []string{full}}}
+	cands := []Candidate{{EntityRef: "note:1", Title: "T", FullContent: "x"}}
+
+	var captured strings.Builder
+	out, err := Synthesize(context.Background(), fake, "q?", cands, FormatMarkdown,
+		func(s string) { captured.WriteString(s) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != full {
+		t.Errorf("aggregated output = %q", out)
+	}
+	if captured.String() != full {
+		t.Errorf("streamed chunks did not reassemble: %q", captured.String())
+	}
+}
+
+func TestSynthesizeFallsBackToChatWhenNotStreamer(t *testing.T) {
+	full := "Single-shot answer."
+	fake := &scriptedLLM{responses: []string{full}}
+	cands := []Candidate{{EntityRef: "note:1", Title: "T", FullContent: "x"}}
+
+	var calls int
+	var captured strings.Builder
+	out, err := Synthesize(context.Background(), fake, "q?", cands, FormatMarkdown,
+		func(s string) {
+			calls++
+			captured.WriteString(s)
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != full || captured.String() != full {
+		t.Errorf("non-streaming fallback should still emit full content, got %q vs %q", out, captured.String())
+	}
+	if calls != 1 {
+		t.Errorf("non-streamer client should fire onChunk exactly once, got %d", calls)
 	}
 }
 

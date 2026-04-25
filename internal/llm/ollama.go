@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -120,5 +121,106 @@ func (c *OllamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 		Model:        out.Model,
 		PromptTokens: out.PromptEvalCount,
 		OutputTokens: out.EvalCount,
+	}, nil
+}
+
+// Stream emits successive content deltas to onChunk and returns the full
+// concatenated answer once Ollama signals "done":true. Ollama's streaming
+// protocol is line-delimited JSON over keep-alive HTTP.
+func (c *OllamaClient) Stream(ctx context.Context, req ChatRequest, onChunk func(string)) (*ChatResponse, error) {
+	model := req.Model
+	if model == "" {
+		model = c.cfg.Model
+	}
+
+	payload := ollamaChatRequest{
+		Model:    model,
+		Messages: req.Messages,
+		Stream:   true,
+	}
+	if req.JSON {
+		payload.Format = "json"
+	}
+	if req.Temperature > 0 || req.MaxTokens > 0 {
+		opts := &ollamaOptions{}
+		if req.Temperature > 0 {
+			t := req.Temperature
+			opts.Temperature = &t
+		}
+		if req.MaxTokens > 0 {
+			n := req.MaxTokens
+			opts.NumPredict = &n
+		}
+		payload.Options = opts
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal ollama request: %w", err)
+	}
+
+	url := c.cfg.Endpoint + "/api/chat"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/x-ndjson")
+
+	// Streaming requests need an HTTP client without a global Timeout; the
+	// per-call ctx (with deadline if any) governs cancellation.
+	streamHC := &http.Client{}
+	resp, err := streamHC.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("ollama http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("ollama status %d: %s", resp.StatusCode, bytes.TrimSpace(b))
+	}
+
+	var (
+		full         strings.Builder
+		lastModel    string
+		promptTokens int
+		evalTokens   int
+	)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var frame ollamaChatResponse
+		if err := json.Unmarshal(line, &frame); err != nil {
+			return nil, fmt.Errorf("decode ollama stream frame: %w", err)
+		}
+		if frame.Model != "" {
+			lastModel = frame.Model
+		}
+		if frame.Message.Content != "" {
+			full.WriteString(frame.Message.Content)
+			if onChunk != nil {
+				onChunk(frame.Message.Content)
+			}
+		}
+		if frame.Done {
+			promptTokens = frame.PromptEvalCount
+			evalTokens = frame.EvalCount
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read ollama stream: %w", err)
+	}
+
+	return &ChatResponse{
+		Content:      full.String(),
+		Model:        lastModel,
+		PromptTokens: promptTokens,
+		OutputTokens: evalTokens,
 	}, nil
 }

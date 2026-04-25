@@ -82,9 +82,25 @@ Now write the answer.`
 
 // Synthesize asks the LLM to compose a final answer in the requested format.
 // An empty format falls back to Markdown.
-func Synthesize(ctx context.Context, client llm.Client, question string, candidates []Candidate, format Format) (string, error) {
+//
+// When onChunk is non-nil and the underlying client implements llm.Streamer,
+// successive content deltas are forwarded as they arrive — useful for the CLI
+// to print tokens live. When the client doesn't support streaming, onChunk is
+// invoked once with the full answer at the end.
+func Synthesize(
+	ctx context.Context,
+	client llm.Client,
+	question string,
+	candidates []Candidate,
+	format Format,
+	onChunk func(string),
+) (string, error) {
 	if len(candidates) == 0 {
-		return emptyAnswer(format), nil
+		ans := emptyAnswer(format)
+		if onChunk != nil {
+			onChunk(ans)
+		}
+		return ans, nil
 	}
 	var b strings.Builder
 	for _, c := range candidates {
@@ -99,16 +115,32 @@ func Synthesize(ctx context.Context, client llm.Client, question string, candida
 			fmt.Fprintf(&b, "- %s [%s]: %s\n", c.Title, c.EntityRef, body)
 		}
 	}
-
-	resp, err := client.Chat(ctx, llm.ChatRequest{
+	req := llm.ChatRequest{
 		Temperature: 0.2,
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: systemPromptFor(format)},
 			{Role: llm.RoleUser, Content: fmt.Sprintf(synthUserTemplate, question, b.String())},
 		},
-	})
+	}
+
+	if onChunk != nil {
+		if streamer, ok := client.(llm.Streamer); ok {
+			resp, err := streamer.Stream(ctx, req, onChunk)
+			if err != nil {
+				return "", fmt.Errorf("synthesize: %w", err)
+			}
+			return strings.TrimSpace(resp.Content), nil
+		}
+	}
+
+	resp, err := client.Chat(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("synthesize: %w", err)
+	}
+	if onChunk != nil {
+		// Client doesn't stream; emit the whole answer once so the caller's
+		// progress display still shows something.
+		onChunk(resp.Content)
 	}
 	return strings.TrimSpace(resp.Content), nil
 }

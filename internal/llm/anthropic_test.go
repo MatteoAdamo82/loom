@@ -127,6 +127,61 @@ func TestAnthropicConcatenatesTextBlocks(t *testing.T) {
 	}
 }
 
+func TestAnthropicStreamEmitsDeltasAndAggregates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		write := func(s string) {
+			_, _ = w.Write([]byte(s))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		write("event: message_start\n")
+		write(`data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":18,"output_tokens":0}}}` + "\n\n")
+		write("event: content_block_start\n")
+		write(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n")
+		write("event: content_block_delta\n")
+		write(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}` + "\n\n")
+		write("event: content_block_delta\n")
+		write(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"there"}}` + "\n\n")
+		write("event: content_block_stop\n")
+		write(`data: {"type":"content_block_stop","index":0}` + "\n\n")
+		write("event: message_delta\n")
+		write(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}` + "\n\n")
+		write("event: message_stop\n")
+		write(`data: {"type":"message_stop"}` + "\n\n")
+	}))
+	defer srv.Close()
+
+	c := NewAnthropic(AnthropicConfig{Endpoint: srv.URL, Model: "claude-sonnet-4-6", APIKey: "k"})
+
+	var chunks []string
+	resp, err := c.Stream(context.Background(), ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	}, func(s string) {
+		chunks = append(chunks, s)
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := strings.Join(chunks, ""); got != "Hello there" {
+		t.Errorf("chunk concat = %q", got)
+	}
+	if resp.Content != "Hello there" {
+		t.Errorf("response content = %q", resp.Content)
+	}
+	if resp.PromptTokens != 18 {
+		t.Errorf("prompt tokens = %d, want 18 (from message_start)", resp.PromptTokens)
+	}
+	if resp.OutputTokens != 7 {
+		t.Errorf("output tokens = %d, want 7 (from message_delta)", resp.OutputTokens)
+	}
+	if len(chunks) != 2 {
+		t.Errorf("expected 2 deltas, got %d", len(chunks))
+	}
+}
+
 func TestAnthropicDefaultMaxTokens(t *testing.T) {
 	var captured anthropicMessageRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

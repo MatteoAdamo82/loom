@@ -103,3 +103,46 @@ func TestOpenAIDefaultEndpoint(t *testing.T) {
 		t.Errorf("default endpoint = %q", c.cfg.Endpoint)
 	}
 }
+
+func TestOpenAIStreamEmitsDeltasAndAggregates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		write := func(s string) {
+			_, _ = w.Write([]byte(s))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		write(`data: {"model":"gpt-4o-mini","choices":[{"delta":{"role":"assistant","content":"Hello "}}]}` + "\n\n")
+		write(`data: {"model":"gpt-4o-mini","choices":[{"delta":{"content":"world"}}]}` + "\n\n")
+		write(`data: {"model":"gpt-4o-mini","choices":[{"delta":{"content":"!"}}]}` + "\n\n")
+		write(`data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4}}` + "\n\n")
+		write("data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	c := NewOpenAI(OpenAIConfig{Endpoint: srv.URL, Model: "gpt-4o-mini", APIKey: "sk"})
+
+	var chunks []string
+	resp, err := c.Stream(context.Background(), ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	}, func(s string) {
+		chunks = append(chunks, s)
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := strings.Join(chunks, ""); got != "Hello world!" {
+		t.Errorf("chunk concat = %q", got)
+	}
+	if resp.Content != "Hello world!" {
+		t.Errorf("response content = %q", resp.Content)
+	}
+	if resp.PromptTokens != 11 || resp.OutputTokens != 4 {
+		t.Errorf("token counts = %d / %d", resp.PromptTokens, resp.OutputTokens)
+	}
+	if len(chunks) != 3 {
+		t.Errorf("expected 3 deltas (excl. usage frame), got %d", len(chunks))
+	}
+}
