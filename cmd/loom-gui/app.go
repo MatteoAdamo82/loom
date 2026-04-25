@@ -244,10 +244,31 @@ func (a *App) GetNote(slug string) (*NoteDetailVM, error) {
 	return out, nil
 }
 
-func (a *App) Ask(question string) (*AnswerVM, error) {
+// Event names emitted to the frontend during a streaming Ask. We keep the
+// wire format minimal — the JS side only needs to know the chunk and when
+// streaming starts/ends.
+const (
+	eventAnswerStart = "loom:answer:start"
+	eventAnswerChunk = "loom:answer:chunk"
+	eventAnswerEnd   = "loom:answer:end"
+)
+
+// Ask runs a query through the engine and streams the synthesised answer to
+// the frontend via Wails events. The returned AnswerVM is resolved once the
+// full pipeline finishes; the live UI updates from the chunk events in the
+// meantime. format follows the same enum as the CLI: markdown | marp | text.
+func (a *App) Ask(question, format string) (*AnswerVM, error) {
 	a.mu.RLock()
 	eng := a.queryEng
 	store := a.store
+	cfgQuery := query.Config{}
+	if a.cfg != nil {
+		cfgQuery = query.Config{
+			BM25TopK:       a.cfg.Query.BM25TopK,
+			GraphExpandHop: a.cfg.Query.GraphExpandHop,
+			RerankTopK:     a.cfg.Query.RerankTopK,
+		}
+	}
 	ctx := a.ctx
 	a.mu.RUnlock()
 	if eng == nil {
@@ -257,10 +278,23 @@ func (a *App) Ask(question string) (*AnswerVM, error) {
 	if question == "" {
 		return nil, errors.New("question is empty")
 	}
-	ans, err := eng.Run(ctx, question)
+
+	// Build a per-call engine snapshot so concurrent Asks (unlikely from the
+	// UI but cheap to defend against) can't trample each other's settings.
+	perCall := *eng
+	perCall.Cfg = cfgQuery
+	perCall.Cfg.Format = query.ParseFormat(format)
+	perCall.OnSynthesisChunk = func(s string) {
+		wailsruntime.EventsEmit(ctx, eventAnswerChunk, s)
+	}
+
+	wailsruntime.EventsEmit(ctx, eventAnswerStart, question)
+	ans, err := perCall.Run(ctx, question)
+	wailsruntime.EventsEmit(ctx, eventAnswerEnd)
 	if err != nil {
 		return nil, err
 	}
+
 	cites := make([]CitationVM, 0, len(ans.Citations))
 	for _, c := range ans.Citations {
 		slug := ""

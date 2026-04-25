@@ -77,16 +77,25 @@ export type LintReport = {
   findings: LintFinding[];
 };
 
+export type AnswerFormat = "markdown" | "marp" | "text";
+
 // At runtime Wails injects window.go.main.App with our methods.
 type Bindings = {
   Status(): Promise<Status>;
   Reload(): Promise<Status>;
   ListNotes(kind: string, limit: number): Promise<NoteSummary[]>;
   GetNote(slug: string): Promise<NoteDetail>;
-  Ask(question: string): Promise<Answer>;
+  Ask(question: string, format: AnswerFormat): Promise<Answer>;
   PickAndIngest(): Promise<Ingested | null>;
   IngestPath(path: string): Promise<Ingested>;
   Lint(): Promise<LintReport>;
+};
+
+// Wails also injects window.runtime with EventsOn / EventsOff helpers used to
+// receive streaming token deltas while Ask() is in flight.
+type WailsRuntime = {
+  EventsOn(name: string, cb: (...args: any[]) => void): () => void;
+  EventsOff(name: string, ...rest: any[]): void;
 };
 
 function api(): Bindings {
@@ -97,13 +106,38 @@ function api(): Bindings {
   return w.go.main.App as Bindings;
 }
 
+function rt(): WailsRuntime | null {
+  const w = window as any;
+  return (w?.runtime as WailsRuntime) ?? null;
+}
+
+// Event names mirror the constants on the Go side.
+export const AnswerEvents = {
+  Start: "loom:answer:start",
+  Chunk: "loom:answer:chunk",
+  End: "loom:answer:end",
+} as const;
+
 export const Loom = {
   status: () => api().Status(),
   reload: () => api().Reload(),
   listNotes: (kind = "", limit = 200) => api().ListNotes(kind, limit),
   getNote: (slug: string) => api().GetNote(slug),
-  ask: (question: string) => api().Ask(question),
+  ask: (question: string, format: AnswerFormat = "markdown") => api().Ask(question, format),
   pickAndIngest: () => api().PickAndIngest(),
   ingestPath: (path: string) => api().IngestPath(path),
   lint: () => api().Lint(),
+  // onAnswerChunk subscribes a callback to incoming token deltas. Returns an
+  // unsubscribe function. Safe to call before or after Ask() — Wails buffers
+  // events until a listener is registered.
+  onAnswerChunk: (cb: (delta: string) => void): (() => void) => {
+    const r = rt();
+    if (!r) return () => {};
+    return r.EventsOn(AnswerEvents.Chunk, (delta: string) => cb(delta));
+  },
+  onAnswerEnd: (cb: () => void): (() => void) => {
+    const r = rt();
+    if (!r) return () => {};
+    return r.EventsOn(AnswerEvents.End, () => cb());
+  },
 };
