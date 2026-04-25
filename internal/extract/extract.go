@@ -64,6 +64,12 @@ func DefaultRegistry() *Registry {
 	return NewRegistry(Text{}, PDF{}, HTML{})
 }
 
+// NewRegistryWithPDF returns the default extractor set with a configured PDF
+// extractor. Use this when you want OCR fallback or a custom cache dir.
+func NewRegistryWithPDF(pdf PDF) *Registry {
+	return NewRegistry(Text{}, pdf, HTML{})
+}
+
 // ----- text (txt, md) -------------------------------------------------------
 
 type Text struct{}

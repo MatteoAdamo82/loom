@@ -19,6 +19,7 @@ type Config struct {
 	Rerank  LLMConfig     `toml:"rerank"`
 	Ingest  IngestConfig  `toml:"ingest"`
 	Query   QueryConfig   `toml:"query"`
+	Extract ExtractConfig `toml:"extract"`
 
 	loadedFrom string
 }
@@ -47,6 +48,33 @@ type QueryConfig struct {
 	RerankTopK     int `toml:"rerank_top_k"`
 }
 
+// ExtractConfig groups settings for the file extractors. Currently only PDF
+// has knobs; html/txt/md need none.
+type ExtractConfig struct {
+	PDF PDFConfig `toml:"pdf"`
+}
+
+// PDFConfig governs how PDFs are turned into Markdown.
+//
+// Stage 1 (always): try the pure-Go ledongthuc reader for selectable text.
+// Stage 2 (when OCR is allowed): render image-only pages with `pdftoppm` and
+// run `tesseract` on the result. Composed Markdown is cached at CacheDir
+// keyed by the PDF's sha256 so re-ingest is instant.
+type PDFConfig struct {
+	// OCR controls when the OCR fallback runs:
+	//   "off"    — never; rely solely on ledongthuc.
+	//   "auto"   — only when ledongthuc returns no usable text. (default)
+	//   "always" — always re-OCR every page, even if text was extractable.
+	OCR string `toml:"ocr"`
+	// OCRLanguages is passed to tesseract via `-l`. e.g. "eng+ita".
+	OCRLanguages string `toml:"ocr_languages"`
+	// CacheDir holds the composed Markdown per PDF. Empty means
+	// `~/.loom/cache/pdf`.
+	CacheDir string `toml:"cache_dir"`
+	// OCRDPI is the rasterization resolution for pdftoppm. Default 300.
+	OCRDPI int `toml:"ocr_dpi"`
+}
+
 func Default() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
@@ -73,6 +101,14 @@ func Default() *Config {
 			BM25TopK:       30,
 			GraphExpandHop: 1,
 			RerankTopK:     8,
+		},
+		Extract: ExtractConfig{
+			PDF: PDFConfig{
+				OCR:          "auto",
+				OCRLanguages: "eng",
+				CacheDir:     filepath.Join(home, ".loom", "cache", "pdf"),
+				OCRDPI:       300,
+			},
 		},
 	}
 }
@@ -149,6 +185,18 @@ func (c *Config) merge(other *Config) {
 	if other.Query.RerankTopK > 0 {
 		c.Query.RerankTopK = other.Query.RerankTopK
 	}
+	if other.Extract.PDF.OCR != "" {
+		c.Extract.PDF.OCR = other.Extract.PDF.OCR
+	}
+	if other.Extract.PDF.OCRLanguages != "" {
+		c.Extract.PDF.OCRLanguages = other.Extract.PDF.OCRLanguages
+	}
+	if other.Extract.PDF.CacheDir != "" {
+		c.Extract.PDF.CacheDir = other.Extract.PDF.CacheDir
+	}
+	if other.Extract.PDF.OCRDPI > 0 {
+		c.Extract.PDF.OCRDPI = other.Extract.PDF.OCRDPI
+	}
 }
 
 func mergeLLM(dst *LLMConfig, src LLMConfig) {
@@ -168,6 +216,7 @@ func mergeLLM(dst *LLMConfig, src LLMConfig) {
 
 func (c *Config) expand() {
 	c.Storage.DBPath = expandPath(c.Storage.DBPath)
+	c.Extract.PDF.CacheDir = expandPath(c.Extract.PDF.CacheDir)
 }
 
 // APIKey resolves the key named by LLMConfig.APIKeyEnv from the environment.

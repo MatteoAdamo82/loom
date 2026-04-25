@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/MatteoAdamo82/loom/internal/config"
+	"github.com/MatteoAdamo82/loom/internal/extract"
 	"github.com/MatteoAdamo82/loom/internal/ingest"
 	"github.com/MatteoAdamo82/loom/internal/lint"
 	llmpkg "github.com/MatteoAdamo82/loom/internal/llm"
@@ -80,6 +81,12 @@ func (a *App) bootstrap() {
 	a.cfg = cfg
 	a.store = store
 	a.ingestor = ingest.NewPipeline(store, client)
+	a.ingestor.Registry = extract.NewRegistryWithPDF(extract.PDF{
+		OCRMode:      extract.OCRMode(cfg.Extract.PDF.OCR),
+		OCRLanguages: cfg.Extract.PDF.OCRLanguages,
+		CacheDir:     cfg.Extract.PDF.CacheDir,
+		OCRDPI:       cfg.Extract.PDF.OCRDPI,
+	})
 	a.ingestor.ChunkCfg = ingest.ChunkConfig{
 		MaxTokens: cfg.Ingest.ChunkTokens,
 		Overlap:   cfg.Ingest.ChunkOverlap,

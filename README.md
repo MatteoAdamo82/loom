@@ -138,6 +138,37 @@ loom config edit                  # open ~/.loom/config.toml in $EDITOR
 loom completion zsh > _loom       # shell completion (bash/zsh/fish/powershell)
 ```
 
+## Optional system tools
+
+Loom is a single Go binary with no required external dependencies, but it
+picks up two CLI tools when present to handle scanned PDFs:
+
+```bash
+# macOS
+brew install poppler tesseract                      # base OCR
+brew install tesseract-lang                         # all language packs
+
+# Debian/Ubuntu
+sudo apt install poppler-utils tesseract-ocr tesseract-ocr-ita
+```
+
+When both `pdftoppm` and `tesseract` are on `PATH`, Loom automatically falls
+back to OCR for image-only PDF pages, composes a Markdown view with `## Page N`
+headers, and caches the result under `~/.loom/cache/pdf/<sha256>.md` so
+re-ingesting the same file is instant. Configure language(s) and behaviour in
+`config.toml`:
+
+```toml
+[extract.pdf]
+ocr           = "auto"        # "off" | "auto" (default) | "always"
+ocr_languages = "eng+ita"     # tesseract `-l` value
+ocr_dpi       = 300
+cache_dir     = "~/.loom/cache/pdf"
+```
+
+To force a re-extraction after improving OCR settings, just delete the cache
+file (`rm ~/.loom/cache/pdf/<hash>.md`) and re-run `loom ingest`.
+
 ## Configuration
 
 `~/.loom/config.toml` (created by `loom init`):

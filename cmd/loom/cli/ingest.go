@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/MatteoAdamo82/loom/internal/extract"
 	"github.com/MatteoAdamo82/loom/internal/ingest"
 	"github.com/spf13/cobra"
 )
@@ -25,6 +26,12 @@ func cmdIngest(configPath *string) *cobra.Command {
 			}
 
 			p := ingest.NewPipeline(rt.Store, client)
+			p.Registry = extract.NewRegistryWithPDF(extract.PDF{
+				OCRMode:      extract.OCRMode(rt.Cfg.Extract.PDF.OCR),
+				OCRLanguages: rt.Cfg.Extract.PDF.OCRLanguages,
+				CacheDir:     rt.Cfg.Extract.PDF.CacheDir,
+				OCRDPI:       rt.Cfg.Extract.PDF.OCRDPI,
+			})
 			p.ChunkCfg = ingest.ChunkConfig{
 				MaxTokens: rt.Cfg.Ingest.ChunkTokens,
 				Overlap:   rt.Cfg.Ingest.ChunkOverlap,

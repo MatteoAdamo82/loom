@@ -15,6 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/MatteoAdamo82/loom/internal/config"
+	"github.com/MatteoAdamo82/loom/internal/extract"
 	"github.com/MatteoAdamo82/loom/internal/ingest"
 	"github.com/MatteoAdamo82/loom/internal/lint"
 	llmpkg "github.com/MatteoAdamo82/loom/internal/llm"
@@ -127,6 +128,12 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			p := ingest.NewPipeline(store, client)
+			p.Registry = extract.NewRegistryWithPDF(extract.PDF{
+				OCRMode:      extract.OCRMode(cfg.Extract.PDF.OCR),
+				OCRLanguages: cfg.Extract.PDF.OCRLanguages,
+				CacheDir:     cfg.Extract.PDF.CacheDir,
+				OCRDPI:       cfg.Extract.PDF.OCRDPI,
+			})
 			p.ChunkCfg = ingest.ChunkConfig{
 				MaxTokens: cfg.Ingest.ChunkTokens,
 				Overlap:   cfg.Ingest.ChunkOverlap,
