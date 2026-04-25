@@ -72,9 +72,16 @@ pluggable — Ollama (local), OpenAI, or Anthropic via API.
 
 ## Install
 
-### Pre-built binaries
+### Homebrew (macOS, Linux)
 
-Download the latest release for your platform:
+```bash
+brew install MatteoAdamo82/loom/loom
+```
+
+Installs both `loom` and `loom-mcp`. The Wails desktop GUI (`Loom.app`) is
+uploaded as a separate `.zip` on each release page.
+
+### Pre-built binaries
 
 ```bash
 # macOS (Apple Silicon)
@@ -85,9 +92,6 @@ sudo mv loom loom-mcp /usr/local/bin/
 curl -L https://github.com/MatteoAdamo82/loom/releases/latest/download/loom_*_linux_x86_64.tar.gz | tar xz
 sudo mv loom loom-mcp /usr/local/bin/
 ```
-
-The macOS GUI app (`Loom.app`) is uploaded as a separate `.zip` asset on
-each release.
 
 ### From source
 

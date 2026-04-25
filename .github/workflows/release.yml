@@ -31,6 +31,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Personal access token with write access to MatteoAdamo82/homebrew-loom.
+          # Optional: when unset, the brew formula is built but not pushed to
+          # the tap (the rest of the release continues normally).
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
   macos-app:
     name: macOS GUI app (Wails)

@@ -60,6 +60,36 @@ archives:
       - LICENSE
     ids: [loom, loom-mcp]
 
+brews:
+  - name: loom
+    repository:
+      owner: MatteoAdamo82
+      name: homebrew-loom
+      branch: main
+      token: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}{{ .Env.HOMEBREW_TAP_TOKEN }}{{ end }}'
+    homepage: 'https://github.com/MatteoAdamo82/loom'
+    description: 'LLM memory: SQLite + BM25 + LLM, no embeddings.'
+    license: MIT
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: 'brew formula update for loom version {{ .Tag }}'
+    install: |
+      bin.install "loom"
+      bin.install "loom-mcp"
+    test: |
+      assert_match "loom version", shell_output("#{bin}/loom --version")
+    # Skip pushing to the tap on pre-releases (e.g. v0.x rc tags) so we don't
+    # auto-publish unstable formulas to brew users.
+    skip_upload: auto
+    caveats: |
+      Loom installed two binaries:
+        - loom       — CLI for ingest, query, lint
+        - loom-mcp   — Model Context Protocol stdio server
+
+      Run `loom init` to create ~/.loom/config.toml and your SQLite store.
+      The macOS desktop GUI (Loom.app) ships separately on each release page.
+
 checksum:
   name_template: 'checksums.txt'
 
@@ -79,7 +109,7 @@ changelog:
 
 release:
   github:
-    owner: matteoadamo
+    owner: MatteoAdamo82
     name: loom
   draft: false
   prerelease: auto
