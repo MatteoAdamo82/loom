@@ -245,10 +245,18 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 				mcp.Description("Jaccard threshold for duplicate detection (0..1, default 0.6)"),
 				mcp.Min(0), mcp.Max(1),
 			),
+			mcp.WithNumber("min_keywords",
+				mcp.Description("Minimum keywords on both sides to compare for duplicates (default 3, filters stub entities)"),
+				mcp.Min(1), mcp.Max(20),
+			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			min := req.GetFloat("min_overlap", 0)
-			report, err := lint.Run(ctx, store, lint.Config{MinKeywordOverlap: min})
+			minKW := int(req.GetFloat("min_keywords", 0))
+			report, err := lint.Run(ctx, store, lint.Config{
+				MinKeywordOverlap: min,
+				MinKeywords:       minKW,
+			})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}

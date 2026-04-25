@@ -9,6 +9,7 @@ import (
 
 func cmdLint(configPath *string) *cobra.Command {
 	var minOverlap float64
+	var minKeywords int
 	c := &cobra.Command{
 		Use:   "lint",
 		Short: "Inspect the knowledge base for orphans, near-duplicates, and gaps.",
@@ -21,6 +22,7 @@ func cmdLint(configPath *string) *cobra.Command {
 
 			report, err := lint.Run(cliContext(cmd), rt.Store, lint.Config{
 				MinKeywordOverlap: minOverlap,
+				MinKeywords:       minKeywords,
 			})
 			if err != nil {
 				return err
@@ -47,5 +49,7 @@ func cmdLint(configPath *string) *cobra.Command {
 	}
 	c.Flags().Float64Var(&minOverlap, "min-overlap", 0.6,
 		"minimum keyword Jaccard score (0..1) to flag two notes as duplicates")
+	c.Flags().IntVar(&minKeywords, "min-keywords", 3,
+		"minimum keywords required on both sides to compare for duplicates (filters entity stubs)")
 	return c
 }

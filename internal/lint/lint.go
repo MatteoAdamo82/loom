@@ -51,6 +51,12 @@ type Config struct {
 	// MinKeywordOverlap is the Jaccard threshold (0..1) above which two notes
 	// of the same kind are flagged as near-duplicates. Default: 0.6.
 	MinKeywordOverlap float64
+	// MinKeywords gates the duplicate check on sample size: pairs where
+	// either side has fewer than this many keywords are skipped. Without
+	// this, ingest-time entity stubs (which carry a single kind keyword
+	// like "person") all collide at 100% Jaccard and drown the report.
+	// Default: 3.
+	MinKeywords int
 	// IgnoreKinds lists note kinds excluded from orphan detection (summary
 	// notes are intentionally not backlinked from elsewhere). Default:
 	// {"summary"}.
@@ -60,6 +66,9 @@ type Config struct {
 func (c Config) withDefaults() Config {
 	if c.MinKeywordOverlap == 0 {
 		c.MinKeywordOverlap = 0.6
+	}
+	if c.MinKeywords == 0 {
+		c.MinKeywords = 3
 	}
 	if c.IgnoreKinds == nil {
 		c.IgnoreKinds = []string{"summary"}
@@ -178,7 +187,13 @@ func checkDuplicates(ctx context.Context, store *storage.Store, cfg Config, repo
 			continue
 		}
 		for i := 0; i < len(group); i++ {
+			if len(group[i].Keywords) < cfg.MinKeywords {
+				continue
+			}
 			for j := i + 1; j < len(group); j++ {
+				if len(group[j].Keywords) < cfg.MinKeywords {
+					continue
+				}
 				score := jaccard(group[i].Keywords, group[j].Keywords)
 				if score < cfg.MinKeywordOverlap {
 					continue

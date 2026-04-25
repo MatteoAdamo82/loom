@@ -138,6 +138,79 @@ func TestRunFindsSourceGaps(t *testing.T) {
 	}
 }
 
+func TestDuplicatesIgnoresStubEntities(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Three entity stubs, each with a single "kind" keyword — exactly what
+	// the ingest pipeline emits when it discovers new entities. Before the
+	// MinKeywords gate they collided pairwise at 100% Jaccard and produced
+	// O(n²) noise findings.
+	mustNote(t, s, &storage.Note{
+		Slug: "karpathy", Title: "Andrej Karpathy", Kind: "entity",
+		Keywords: []string{"person"}, Content: "stub",
+	})
+	mustNote(t, s, &storage.Note{
+		Slug: "bush", Title: "Vannevar Bush", Kind: "entity",
+		Keywords: []string{"person"}, Content: "stub",
+	})
+	mustNote(t, s, &storage.Note{
+		Slug: "memex", Title: "Memex", Kind: "entity",
+		Keywords: []string{"concept"}, Content: "stub",
+	})
+
+	report, err := Run(ctx, s, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range report.Findings {
+		if f.Kind == "duplicate" {
+			t.Errorf("stub entities (1 keyword each) should not be flagged: %+v", f)
+		}
+	}
+}
+
+func TestDuplicatesHonoursCustomMinKeywords(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Two identical 2-keyword pairs.
+	mustNote(t, s, &storage.Note{
+		Slug: "n1", Title: "N1", Kind: "concept",
+		Keywords: []string{"alpha", "beta"}, Content: "x",
+	})
+	mustNote(t, s, &storage.Note{
+		Slug: "n2", Title: "N2", Kind: "concept",
+		Keywords: []string{"alpha", "beta"}, Content: "y",
+	})
+
+	// Default config (MinKeywords=3) → not flagged.
+	report, err := Run(ctx, s, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range report.Findings {
+		if f.Kind == "duplicate" {
+			t.Errorf("MinKeywords=3 should skip 2-keyword pairs, got %+v", f)
+		}
+	}
+
+	// Lowered explicitly → flagged.
+	report, err = Run(ctx, s, Config{MinKeywords: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dups := 0
+	for _, f := range report.Findings {
+		if f.Kind == "duplicate" {
+			dups++
+		}
+	}
+	if dups != 1 {
+		t.Errorf("MinKeywords=2 should flag the pair, got %d duplicates", dups)
+	}
+}
+
 func TestStatsPopulated(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
