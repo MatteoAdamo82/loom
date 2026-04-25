@@ -21,10 +21,12 @@ type Document struct {
 }
 
 type Extractor interface {
-	// Supports reports whether the extractor handles the given file extension.
-	Supports(ext string) bool
-	// Extract reads the file at path and returns the normalized Document.
-	Extract(path string) (*Document, error)
+	// Supports reports whether the extractor handles the given source. The
+	// source can be a local filesystem path or an http/https URL — the
+	// extractor decides how to interpret it.
+	Supports(source string) bool
+	// Extract reads the source and returns the normalized Document.
+	Extract(source string) (*Document, error)
 }
 
 // Registry resolves the right extractor for a path or URI.
@@ -36,18 +38,28 @@ func NewRegistry(ext ...Extractor) *Registry {
 	return &Registry{ext: ext}
 }
 
-func (r *Registry) Resolve(path string) (Extractor, error) {
-	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+func (r *Registry) Resolve(source string) (Extractor, error) {
 	for _, e := range r.ext {
-		if e.Supports(ext) {
+		if e.Supports(source) {
 			return e, nil
 		}
 	}
-	return nil, fmt.Errorf("no extractor for .%s files", ext)
+	return nil, fmt.Errorf("no extractor for %q", source)
+}
+
+// IsURL reports whether s is an http/https URL string. Exposed so callers can
+// shortcut path-only logic.
+func IsURL(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+func extOf(path string) string {
+	return strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 }
 
 // DefaultRegistry returns the extractors enabled by default (txt, md, pdf,
-// html). Callers that want a custom set can build their own Registry.
+// html, http/https URLs). Callers that want a custom set can build their own
+// Registry.
 func DefaultRegistry() *Registry {
 	return NewRegistry(Text{}, PDF{}, HTML{})
 }
@@ -56,8 +68,11 @@ func DefaultRegistry() *Registry {
 
 type Text struct{}
 
-func (Text) Supports(ext string) bool {
-	switch ext {
+func (Text) Supports(source string) bool {
+	if IsURL(source) {
+		return false // URLs go through HTML
+	}
+	switch extOf(source) {
 	case "txt", "md", "markdown", "text":
 		return true
 	}

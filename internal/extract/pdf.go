@@ -18,7 +18,9 @@ import (
 // outside of Loom for now.
 type PDF struct{}
 
-func (PDF) Supports(ext string) bool { return ext == "pdf" }
+func (PDF) Supports(source string) bool {
+	return !IsURL(source) && extOf(source) == "pdf"
+}
 
 func (p PDF) Extract(path string) (*Document, error) {
 	f, r, err := pdf.Open(path)
