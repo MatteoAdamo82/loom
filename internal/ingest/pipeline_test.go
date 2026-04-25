@@ -155,7 +155,7 @@ func TestIngestDedupByHash(t *testing.T) {
 	p, _ := newPipelineTest(t, analysisJSON)
 	ctx := context.Background()
 
-	body := "# Same Doc\n\nSame body."
+	body := "# Same Doc\n\nSame body, padded to clear the empty-doc guard threshold."
 	path := writeDoc(t, t.TempDir(), "same.md", body)
 
 	if _, err := p.Ingest(ctx, path); err != nil {
@@ -245,7 +245,7 @@ func TestIngestRetryAfterAnalyzeFailureSucceeds(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	path := writeDoc(t, t.TempDir(), "doc.md", "# LLM Wiki\n\nbody mentions Karpathy.\n")
+	path := writeDoc(t, t.TempDir(), "doc.md", "# LLM Wiki\n\nbody mentions Karpathy and the wiki maintenance pattern.\n")
 	ctx := context.Background()
 
 	// First attempt: analyze fails.
@@ -283,7 +283,7 @@ func assertCount(t *testing.T, s *storage.Store, table string, want int) {
 
 func TestAnalyzeHandlesCodeFence(t *testing.T) {
 	fake := &fakeLLM{responses: []string{"```json\n" + analysisJSON + "\n```"}}
-	res, err := Analyze(context.Background(), fake, "doc text")
+	res, err := Analyze(context.Background(), fake, "doc text padded above the empty-doc guard threshold for tests.")
 	if err != nil {
 		t.Fatalf("analyze with code fence: %v", err)
 	}
@@ -292,6 +292,52 @@ func TestAnalyzeHandlesCodeFence(t *testing.T) {
 	}
 	if len(res.Entities) != 3 {
 		t.Errorf("entities = %d, want 3", len(res.Entities))
+	}
+}
+
+func TestAnalyzeRejectsEmptyDocument(t *testing.T) {
+	fake := &fakeLLM{responses: []string{analysisJSON}}
+	_, err := Analyze(context.Background(), fake, "  ")
+	if !errors.Is(err, ErrEmptyDocument) {
+		t.Errorf("want ErrEmptyDocument for whitespace input, got %v", err)
+	}
+	if fake.calls > 0 {
+		t.Errorf("LLM should not have been called for empty input, got %d calls", fake.calls)
+	}
+}
+
+func TestAnalyzeRetriesOnInvalidJSON(t *testing.T) {
+	// First response is conversational prose (the bug we're guarding against);
+	// retry path returns valid JSON.
+	fake := &fakeLLM{responses: []string{
+		"Please provide the source document you would like me to analyze.",
+		analysisJSON,
+	}}
+	res, err := Analyze(context.Background(), fake,
+		"# Some doc\n\nLong enough body text to clear the empty-doc guard for the test.")
+	if err != nil {
+		t.Fatalf("retry should succeed: %v", err)
+	}
+	if res.Title != "LLM Wiki pattern" {
+		t.Errorf("title from retry response missing: %q", res.Title)
+	}
+	if fake.calls != 2 {
+		t.Errorf("expected 2 LLM calls (initial + retry), got %d", fake.calls)
+	}
+}
+
+func TestAnalyzeStillFailsAfterRetry(t *testing.T) {
+	fake := &fakeLLM{responses: []string{
+		"first prose reply",
+		"second prose reply, also not JSON",
+	}}
+	_, err := Analyze(context.Background(), fake,
+		"# Doc\n\nLong enough body text to clear the empty-doc guard for the test.")
+	if err == nil {
+		t.Fatal("expected error after both attempts return prose")
+	}
+	if !strings.Contains(err.Error(), "parse analyze output") {
+		t.Errorf("error should retain original parse context: %v", err)
 	}
 }
 

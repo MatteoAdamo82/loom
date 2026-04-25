@@ -437,9 +437,9 @@ type OllamaModel struct {
 // ListOllamaModels queries the configured Ollama endpoint (or the explicit
 // endpoint argument) for the locally available models. Used by the GUI to
 // pre-populate a dropdown so users don't have to remember model names.
-// Returns an empty slice (not an error) if Ollama isn't reachable — the form
-// should fall back to a free-text input in that case.
-func (a *App) ListOllamaModels(endpoint string) []OllamaModel {
+// The error is surfaced to the UI so the user can see why the dropdown is
+// empty (typical causes: Ollama not running, wrong endpoint, firewall).
+func (a *App) ListOllamaModels(endpoint string) ([]OllamaModel, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		a.mu.RLock()
@@ -453,30 +453,34 @@ func (a *App) ListOllamaModels(endpoint string) []OllamaModel {
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
 
-	hc := &http.Client{Timeout: 3 * time.Second}
-	req, err := http.NewRequestWithContext(a.ctx, http.MethodGet, endpoint+"/api/tags", nil)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hc := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/tags", nil)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	resp, err := hc.Do(req)
-	if err != nil || resp.StatusCode >= 400 {
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("GET %s/api/tags: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("ollama %s/api/tags returned status %d", endpoint, resp.StatusCode)
+	}
 
 	var body struct {
 		Models []OllamaModel `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode /api/tags response: %w", err)
 	}
 	sort.Slice(body.Models, func(i, j int) bool {
 		return body.Models[i].Name < body.Models[j].Name
 	})
-	return body.Models
+	return body.Models, nil
 }
 
 func (a *App) Lint() (*LintReportVM, error) {

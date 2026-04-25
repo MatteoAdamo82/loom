@@ -39,18 +39,22 @@
     }
   });
 
+  let modelsLoading = false;
   async function refreshModels() {
     if (provider !== "ollama") return;
     modelsErr = "";
+    modelsLoading = true;
     try {
       const out = await Loom.listOllamaModels(endpoint);
       availableModels = out ?? [];
       if (availableModels.length === 0) {
-        modelsErr = "no models found at this endpoint (or Ollama not reachable)";
+        modelsErr = "ollama responded but reports no installed models — try `ollama pull <name>` first";
       }
     } catch (e: any) {
       availableModels = [];
       modelsErr = e?.message ?? String(e);
+    } finally {
+      modelsLoading = false;
     }
   }
 
@@ -125,21 +129,26 @@
 
       <label>
         <span>model</span>
-        {#if provider === "ollama" && availableModels.length > 0}
+        {#if provider === "ollama"}
           <div class="row">
-            <select bind:value={model} class="grow">
-              {#each availableModels as m}
-                <option value={m.name}>{m.name}</option>
-              {/each}
+            <select bind:value={model} class="grow" disabled={availableModels.length === 0}>
+              {#if availableModels.length === 0}
+                <option value="">{modelsLoading ? "loading…" : "(no models loaded)"}</option>
+              {:else}
+                {#each availableModels as m}
+                  <option value={m.name}>{m.name}</option>
+                {/each}
+              {/if}
             </select>
             <input type="text" bind:value={model} placeholder={placeholderModel()} />
+            <button type="button" on:click={refreshModels} title="re-query /api/tags" disabled={modelsLoading}>↻</button>
           </div>
-          <small class="dim">pick from local Ollama or type manually (cloud-suffix models work too)</small>
+          <small class="dim">pick from your Ollama tags or type a model name manually (cloud-suffix models work too)</small>
+          {#if modelsErr}
+            <small class="warn">{modelsErr}</small>
+          {/if}
         {:else}
           <input type="text" bind:value={model} placeholder={placeholderModel()} />
-        {/if}
-        {#if modelsErr && provider === "ollama"}
-          <small class="warn">{modelsErr}</small>
         {/if}
       </label>
 

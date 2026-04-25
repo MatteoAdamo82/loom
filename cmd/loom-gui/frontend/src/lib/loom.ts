@@ -105,7 +105,7 @@ type Bindings = {
   Lint(): Promise<LintReport>;
   Settings(): Promise<Settings>;
   SaveSettings(provider: string, model: string, endpoint: string, apiKeyEnv: string): Promise<Status>;
-  ListOllamaModels(endpoint: string): Promise<OllamaModel[] | null>;
+  ListOllamaModels(endpoint: string): Promise<OllamaModel[]>;
 };
 
 // Wails also injects window.runtime with EventsOn / EventsOff helpers used to
