@@ -1,7 +1,94 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import { Loom, type Answer, type AnswerFormat } from "./loom";
   export let onSelect: (slug: string) => void = () => {};
+
+  // Configure marked once: GitHub-flavoured Markdown, soft line breaks.
+  marked.setOptions({ gfm: true, breaks: true });
+
+  // renderAnswer turns the LLM answer into safe HTML for display.
+  // - text: no parsing, just preserve newlines via CSS.
+  // - markdown: full GFM render.
+  // - marp: each `---`-delimited section becomes its own slide card so the
+  //   user sees a real deck instead of a long markdown blob.
+  function renderAnswer(text: string, format: AnswerFormat): string {
+    if (format === "text") return escapeHTML(text);
+    if (format === "marp") return renderMarp(text);
+    return mdToHTML(text);
+  }
+
+  function mdToHTML(md: string): string {
+    const html = marked.parse(md, { async: false }) as string;
+    return DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: [
+        "h1","h2","h3","h4","h5","h6",
+        "p","strong","em","del","s","u","code","pre","hr","br",
+        "ul","ol","li",
+        "blockquote","table","thead","tbody","tr","th","td",
+        "a","img","span","div",
+      ],
+      ALLOWED_ATTR: ["href","title","alt","class","src"],
+    });
+  }
+
+  // renderMarp strips the YAML frontmatter, splits on standalone "---" slide
+  // separators, and wraps each slide in a card. The result is something that
+  // visually reads as a deck (numbered cards, distinct backgrounds) rather
+  // than a long stream of markdown.
+  //
+  // Inline styles intentionally duplicate the .marp-slide CSS — Svelte's
+  // class-name hashing can fail to match against `@html`-injected children
+  // depending on compiler version, so we belt-and-braces with both.
+  function renderMarp(text: string): string {
+    const stripped = text.replace(/^\s*---[\s\S]*?---\s*\n/, "");
+    const slides = stripped
+      .split(/^\s*---\s*$/m)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const total = slides.length;
+    if (total === 0) return mdToHTML(stripped);
+
+    const slideStyle = [
+      "position:relative",
+      "background:#ffffff",
+      "border:1px solid #e2e0db",
+      "border-radius:10px",
+      "padding:1.4rem 1.3rem 0.7rem",
+      "margin:0.6rem 0",
+      "box-shadow:0 1px 3px rgba(0,0,0,0.06)",
+    ].join(";");
+    const counterStyle = [
+      "position:absolute",
+      "top:0.5rem",
+      "right:0.85rem",
+      "font-family:ui-monospace,SFMono-Regular,Menlo,monospace",
+      "font-size:0.68rem",
+      "color:#777b88",
+      "text-transform:uppercase",
+      "letter-spacing:0.06em",
+    ].join(";");
+
+    return slides
+      .map((slide, i) => {
+        const inner = mdToHTML(slide);
+        return (
+          `<div class="marp-slide" style="${slideStyle}">` +
+          `<div class="marp-counter" style="${counterStyle}">slide ${i + 1} / ${total}</div>` +
+          inner +
+          `</div>`
+        );
+      })
+      .join("");
+  }
+
+  function escapeHTML(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
 
   type Turn = {
     question: string;
@@ -105,8 +192,12 @@
           {:else}
             {#if t.pending && !t.answer}
               <p class="pending">thinking…</p>
+            {:else if t.pending}
+              <!-- During streaming, show plain text with the blinking caret;
+                   parsing markdown on every token would flicker. -->
+              <p class="answer streaming">{t.answer}</p>
             {:else}
-              <p class="answer" class:streaming={t.pending}>{t.answer}</p>
+              <div class="answer markdown">{@html renderAnswer(t.answer, t.format)}</div>
             {/if}
             {#if !t.pending}
               {#if t.citations?.length}
@@ -228,6 +319,11 @@
   .answer {
     white-space: pre-wrap;
   }
+  /* Once streaming is done, the markdown bucket replaces the <p> with a
+     <div> that holds parsed HTML — restore normal block flow. */
+  .answer.markdown {
+    white-space: normal;
+  }
   /* Caret pulse while tokens are still arriving — quick visual confirmation. */
   .answer.streaming::after {
     content: "▍";
@@ -236,6 +332,107 @@
     animation: blink 1s steps(1) infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }
+
+  /* Rendered markdown — kept conservative so it reads like a chat reply, not
+     a documentation page. */
+  .answer.markdown :global(h1),
+  .answer.markdown :global(h2),
+  .answer.markdown :global(h3),
+  .answer.markdown :global(h4) {
+    margin: 0.6em 0 0.3em;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .answer.markdown :global(h1) { font-size: 1.45em; }
+  .answer.markdown :global(h2) { font-size: 1.25em; border-bottom: 1px solid var(--border-soft); padding-bottom: 2px; }
+  .answer.markdown :global(h3) { font-size: 1.1em; color: var(--accent-strong); }
+  .answer.markdown :global(p)  { margin: 0.4em 0; line-height: 1.55; }
+  .answer.markdown :global(ul),
+  .answer.markdown :global(ol) {
+    margin: 0.4em 0;
+    padding-left: 1.4em;
+  }
+  .answer.markdown :global(li) { margin: 0.15em 0; line-height: 1.5; }
+  .answer.markdown :global(code) {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--panel);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .answer.markdown :global(pre) {
+    background: var(--panel);
+    padding: 0.7em 0.9em;
+    border-radius: 6px;
+    overflow-x: auto;
+    border: 1px solid var(--border-soft);
+  }
+  .answer.markdown :global(pre code) {
+    background: transparent;
+    padding: 0;
+  }
+  .answer.markdown :global(hr) {
+    border: none;
+    border-top: 1px dashed var(--border);
+    margin: 1em 0;
+  }
+  .answer.markdown :global(blockquote) {
+    border-left: 3px solid var(--accent-soft);
+    margin: 0.5em 0;
+    padding: 0.1em 0.9em;
+    color: var(--muted);
+  }
+  .answer.markdown :global(a) {
+    color: var(--accent-strong);
+    text-decoration: underline;
+  }
+  .answer.markdown :global(table) {
+    border-collapse: collapse;
+    margin: 0.5em 0;
+    font-size: 0.9em;
+  }
+  .answer.markdown :global(th),
+  .answer.markdown :global(td) {
+    border: 1px solid var(--border);
+    padding: 4px 9px;
+    text-align: left;
+  }
+  .answer.markdown :global(th) { background: var(--panel); }
+  .answer.markdown :global(strong) { font-weight: 600; }
+
+  /* Marp slide cards — each section between `---` becomes a distinct,
+     numbered card so the user sees a deck, not a blob of markdown. */
+  .answer.markdown :global(.marp-slide) {
+    position: relative;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem 0.7rem;
+    margin: 0.6rem 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  }
+  .answer.markdown :global(.marp-slide + .marp-slide) {
+    margin-top: 0.8rem;
+  }
+  .answer.markdown :global(.marp-counter) {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.85rem;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .answer.markdown :global(.marp-slide h1),
+  .answer.markdown :global(.marp-slide h2) {
+    margin-top: 0.1em;
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  .answer.markdown :global(.marp-slide > *:last-child) {
+    margin-bottom: 0;
+  }
   .pending {
     color: var(--muted);
     font-style: italic;
