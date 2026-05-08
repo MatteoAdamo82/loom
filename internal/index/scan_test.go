@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,22 +13,33 @@ import (
 )
 
 type stubLLM struct {
+	mu      sync.Mutex
 	calls   int
 	respond func(prompt string) string
 }
 
 func (s *stubLLM) Name() string { return "stub" }
 func (s *stubLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	s.mu.Lock()
 	s.calls++
+	respond := s.respond
+	s.mu.Unlock()
+
 	body := ""
 	for _, m := range req.Messages {
 		body += m.Content + "\n"
 	}
 	resp := `{"summary": "stub summary", "keywords": ["alpha", "beta"]}`
-	if s.respond != nil {
-		resp = s.respond(body)
+	if respond != nil {
+		resp = respond(body)
 	}
 	return &llm.ChatResponse{Content: resp}, nil
+}
+
+func (s *stubLLM) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }
 
 func setupNotes(t *testing.T) (notesDir string, store *storage.Store, lc *stubLLM) {
@@ -66,8 +78,8 @@ func TestScanIndexesNewFiles(t *testing.T) {
 	if res.Added != 2 || res.Updated != 0 {
 		t.Errorf("expected 2 added/0 updated, got %+v", res)
 	}
-	if lc.calls != 2 {
-		t.Errorf("expected 2 LLM calls, got %d", lc.calls)
+	if lc.callCount() != 2 {
+		t.Errorf("expected 2 LLM calls, got %d", lc.callCount())
 	}
 
 	files, _ := store.List(context.Background())
@@ -84,14 +96,14 @@ func TestScanSkipsUnchangedFiles(t *testing.T) {
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	first := lc.calls
+	first := lc.callCount()
 
 	// Second scan: nothing changed → 0 LLM calls.
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if lc.calls != first {
-		t.Errorf("second scan should skip unchanged files, llm went from %d to %d", first, lc.calls)
+	if lc.callCount() != first {
+		t.Errorf("second scan should skip unchanged files, llm went from %d to %d", first, lc.callCount())
 	}
 }
 
@@ -131,7 +143,7 @@ func TestScanReProcessesModifiedFiles(t *testing.T) {
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	first := lc.calls
+	first := lc.callCount()
 
 	// Tweak content and bump mtime forward.
 	time.Sleep(1100 * time.Millisecond)
@@ -140,8 +152,8 @@ func TestScanReProcessesModifiedFiles(t *testing.T) {
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if lc.calls != first+1 {
-		t.Errorf("expected one more LLM call after modification, got %d→%d", first, lc.calls)
+	if lc.callCount() != first+1 {
+		t.Errorf("expected one more LLM call after modification, got %d→%d", first, lc.callCount())
 	}
 }
 
