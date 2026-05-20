@@ -34,7 +34,16 @@ That's it.
 
 ## Install
 
-Requires Go 1.26+ and (for the GUI) Node 20+.
+**macOS (Homebrew) — easiest:**
+
+```bash
+brew tap MatteoAdamo82/loom
+brew install loom
+```
+
+This installs both `loom` (CLI) and `loom-mcp` (MCP server). The desktop GUI (`Loom.app`) is available as a separate download on the [releases page](https://github.com/MatteoAdamo82/loom/releases).
+
+**From source** — requires Go 1.26+ and (for the GUI) Node 20+:
 
 ```bash
 git clone https://github.com/MatteoAdamo82/loom.git
@@ -86,6 +95,27 @@ api_key_env = "ANTHROPIC_API_KEY"
 ```
 
 Loom never stores the API key on disk — only the env var name.
+
+## Organising your folder
+
+Loom walks the notes folder recursively, so subdirectories work out of the box:
+
+```
+~/loom/
+├── work/
+│   ├── project-x.md
+│   └── meetings.md
+├── recipes/
+│   └── carbonara.md
+└── papers/
+    └── llm-wiki.pdf
+```
+
+Citations in answers reflect the full relative path: `[work/project-x.md]`.
+
+**Moving or renaming files** is handled efficiently: Loom detects that the content hash matches an existing record and reuses the summary and keywords without an extra LLM call. The old path is removed from the index automatically.
+
+Hidden directories (names starting with `.`, e.g. `.git`, `.obsidian`) are always skipped.
 
 ## PDFs
 
