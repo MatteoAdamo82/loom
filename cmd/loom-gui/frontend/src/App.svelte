@@ -28,6 +28,7 @@
     const parts: string[] = [];
     if (res.added) parts.push(`${res.added} aggiunti`);
     if (res.updated) parts.push(`${res.updated} aggiornati`);
+    if (res.moved) parts.push(`${res.moved} spostati`);
     if (res.removed) parts.push(`${res.removed} rimossi`);
     if (res.skipped) parts.push(`${res.skipped} invariati`);
     if (res.failed) parts.push(`${res.failed} falliti`);

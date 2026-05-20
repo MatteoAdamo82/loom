@@ -24,6 +24,7 @@ import (
 type Result struct {
 	Added    int
 	Updated  int
+	Moved    int // file moved/renamed: new path, same content, LLM skipped
 	Removed  int
 	Skipped  int
 	Failed   int
@@ -95,8 +96,13 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 		return nil, fmt.Errorf("list index: %w", err)
 	}
 	knownByPath := make(map[string]*storage.File, len(known))
+	knownByHash := make(map[string]*storage.File, len(known))
 	for _, f := range known {
 		knownByPath[f.RelPath] = f
+		// Only keep the first record per hash so moves are deterministic.
+		if _, dup := knownByHash[f.Hash]; !dup {
+			knownByHash[f.Hash] = f
+		}
 	}
 
 	// Find new/modified files needing re-summarisation.
@@ -138,7 +144,8 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 
 			ix.emit(Event{Phase: "summarize", RelPath: j.entry.relPath, Index: idx + 1, Total: len(work)})
 
-			if err := ix.processOne(ctx, j.entry, j.known, force); err != nil {
+			moved, err := ix.processOne(ctx, j.entry, j.known, knownByHash, force)
+			if err != nil {
 				mu.Lock()
 				res.Failed++
 				res.Errors = append(res.Errors, FileError{RelPath: j.entry.relPath, Err: err})
@@ -147,9 +154,12 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 				return
 			}
 			mu.Lock()
-			if j.known == nil {
+			switch {
+			case moved:
+				res.Moved++
+			case j.known == nil:
 				res.Added++
-			} else {
+			default:
 				res.Updated++
 			}
 			processed++
@@ -182,35 +192,54 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 }
 
 // processOne extracts, hashes, summarises, and upserts a single file.
-func (ix *Indexer) processOne(ctx context.Context, e diskEntry, known *storage.File, force bool) error {
-	doc, err := ix.extract(e.absPath)
-	if err != nil {
-		return fmt.Errorf("extract: %w", err)
+// It returns (true, nil) when the file was detected as a move/rename (same
+// content, different path) so the caller can count it separately.
+func (ix *Indexer) processOne(ctx context.Context, e diskEntry, known *storage.File, knownByHash map[string]*storage.File, force bool) (moved bool, err error) {
+	doc, docErr := ix.extract(e.absPath)
+	if docErr != nil {
+		return false, fmt.Errorf("extract: %w", docErr)
 	}
 
-	// If hash is unchanged from a known row, skip the LLM call. (The mtime
-	// check above already covers most of these — this is the second-line
-	// defence for files touched without content change.)
-	if !force && known != nil && known.Hash == doc.Hash {
-		return ix.Store.Upsert(ctx, &storage.File{
-			ID:       known.ID,
-			RelPath:  e.relPath,
-			Hash:     doc.Hash,
-			MTime:    e.mtime,
-			Kind:     doc.Kind,
-			Title:    doc.Title,
-			Content:  doc.Content,
-			Summary:  known.Summary,
-			Keywords: known.Keywords,
-		})
+	if !force {
+		// Same path, same hash → update mtime/title/content but skip LLM.
+		if known != nil && known.Hash == doc.Hash {
+			return false, ix.Store.Upsert(ctx, &storage.File{
+				ID:       known.ID,
+				RelPath:  e.relPath,
+				Hash:     doc.Hash,
+				MTime:    e.mtime,
+				Kind:     doc.Kind,
+				Title:    doc.Title,
+				Content:  doc.Content,
+				Summary:  known.Summary,
+				Keywords: known.Keywords,
+			})
+		}
+
+		// New path, but hash matches a record at a different path → move detected.
+		// Reuse the existing summary and keywords without an LLM call.
+		if known == nil {
+			if prior, ok := knownByHash[doc.Hash]; ok && prior.RelPath != e.relPath {
+				return true, ix.Store.Upsert(ctx, &storage.File{
+					RelPath:  e.relPath,
+					Hash:     doc.Hash,
+					MTime:    e.mtime,
+					Kind:     doc.Kind,
+					Title:    doc.Title,
+					Content:  doc.Content,
+					Summary:  prior.Summary,
+					Keywords: prior.Keywords,
+				})
+			}
+		}
 	}
 
 	summary, keywords, err := Summarise(ctx, ix.LLM, doc.Title, doc.Content)
 	if err != nil {
-		return fmt.Errorf("summarise: %w", err)
+		return false, fmt.Errorf("summarise: %w", err)
 	}
 
-	return ix.Store.Upsert(ctx, &storage.File{
+	return false, ix.Store.Upsert(ctx, &storage.File{
 		RelPath:  e.relPath,
 		Hash:     doc.Hash,
 		MTime:    e.mtime,

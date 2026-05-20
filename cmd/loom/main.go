@@ -159,8 +159,8 @@ func cmdScan(args []string) error {
 		return err
 	}
 
-	fmt.Printf("\nscan done in %s — %d added, %d updated, %d skipped, %d removed",
-		res.Duration.Round(0), res.Added, res.Updated, res.Skipped, res.Removed)
+	fmt.Printf("\nscan done in %s — %d added, %d updated, %d moved, %d skipped, %d removed",
+		res.Duration.Round(0), res.Added, res.Updated, res.Moved, res.Skipped, res.Removed)
 	if res.Failed > 0 {
 		fmt.Printf(", %d failed", res.Failed)
 		fmt.Println()

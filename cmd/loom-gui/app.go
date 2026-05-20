@@ -115,13 +115,14 @@ type FileVM struct {
 }
 
 type ScanResultVM struct {
-	Added    int      `json:"added"`
-	Updated  int      `json:"updated"`
-	Removed  int      `json:"removed"`
-	Skipped  int      `json:"skipped"`
-	Failed   int      `json:"failed"`
-	Errors   []string `json:"errors,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
+	Added      int      `json:"added"`
+	Updated    int      `json:"updated"`
+	Moved      int      `json:"moved"`
+	Removed    int      `json:"removed"`
+	Skipped    int      `json:"skipped"`
+	Failed     int      `json:"failed"`
+	Errors     []string `json:"errors,omitempty"`
+	DurationMs int64    `json:"duration_ms"`
 }
 
 type AskResultVM struct {
@@ -267,6 +268,7 @@ func (a *App) Rescan(force bool) ScanResultVM {
 	}
 	vm.Added = res.Added
 	vm.Updated = res.Updated
+	vm.Moved = res.Moved
 	vm.Removed = res.Removed
 	vm.Skipped = res.Skipped
 	vm.Failed = res.Failed

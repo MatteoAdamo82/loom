@@ -33,6 +33,7 @@ export type AskResult = {
 export type ScanResult = {
   added: number;
   updated: number;
+  moved: number;
   removed: number;
   skipped: number;
   failed: number;

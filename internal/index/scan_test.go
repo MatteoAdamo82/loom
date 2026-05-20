@@ -177,6 +177,46 @@ func TestScanSkipsHiddenAndUnsupported(t *testing.T) {
 	}
 }
 
+func TestScanReusesSummaryOnMove(t *testing.T) {
+	notesDir, store, lc := setupNotes(t)
+	writeNote(t, notesDir, "original.md", "# Content\nhello world")
+
+	ix := New(notesDir, store, lc)
+	if _, err := ix.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	callsAfterFirst := lc.callCount()
+
+	// Move: rename original.md → moved.md (same content, new path).
+	if err := os.Rename(
+		filepath.Join(notesDir, "original.md"),
+		filepath.Join(notesDir, "moved.md"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := ix.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No extra LLM call: summary was inherited from the old record.
+	if lc.callCount() != callsAfterFirst {
+		t.Errorf("expected no new LLM calls on move, got %d extra", lc.callCount()-callsAfterFirst)
+	}
+	if res.Moved != 1 {
+		t.Errorf("expected 1 moved, got %+v", res)
+	}
+	if res.Removed != 1 {
+		t.Errorf("expected 1 removed (old path), got %+v", res)
+	}
+
+	files, _ := store.List(context.Background())
+	if len(files) != 1 || files[0].RelPath != "moved.md" {
+		t.Errorf("expected only moved.md in index, got %+v", files)
+	}
+}
+
 func TestScanRecoversFromUnparseableLLM(t *testing.T) {
 	notesDir, store, _ := setupNotes(t)
 	writeNote(t, notesDir, "a.md", "# A")
