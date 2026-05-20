@@ -1,292 +1,253 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Loom, type Settings, type OllamaModel } from "./loom";
+  import { Loom, type Settings, type Status } from "./loom";
 
-  export let onSaved: () => void = () => {};
+  export let onClose: () => void;
+  export let onSaved: (s: Status) => void;
 
-  let loaded = false;
-  let loading = false;
+  let cfg: Settings | null = null;
   let saving = false;
-  let saveErr = "";
-  let saveOk = "";
-  let configPath = "";
-  let bootError = "";
-
-  let provider: "ollama" | "openai" | "anthropic" = "ollama";
-  let model = "";
-  let endpoint = "";
-  let apiKeyEnv = "";
-
-  let availableModels: OllamaModel[] = [];
-  let modelsErr = "";
+  let error = "";
+  let ollamaModels: string[] = [];
 
   onMount(async () => {
-    loading = true;
     try {
-      const s: Settings = await Loom.settings();
-      configPath = s.config_path;
-      bootError = s.error ?? "";
-      provider = (s.provider as any) || "ollama";
-      model = s.model;
-      endpoint = s.endpoint;
-      apiKeyEnv = s.api_key_env;
-      if (provider === "ollama") await refreshModels();
+      cfg = await Loom.settings();
+      await refreshOllamaModels();
     } catch (e: any) {
-      saveErr = e?.message ?? String(e);
-    } finally {
-      loading = false;
-      loaded = true;
+      error = e?.message ?? String(e);
     }
   });
 
-  let modelsLoading = false;
-  async function refreshModels() {
-    if (provider !== "ollama") return;
-    modelsErr = "";
-    modelsLoading = true;
+  async function refreshOllamaModels() {
+    if (!cfg || cfg.LLM.Provider !== "ollama") return;
     try {
-      const out = await Loom.listOllamaModels(endpoint);
-      availableModels = out ?? [];
-      if (availableModels.length === 0) {
-        modelsErr = "ollama responded but reports no installed models — try `ollama pull <name>` first";
-      }
-    } catch (e: any) {
-      availableModels = [];
-      modelsErr = e?.message ?? String(e);
-    } finally {
-      modelsLoading = false;
+      ollamaModels = await Loom.listOllamaModels(cfg.LLM.Endpoint);
+    } catch {
+      ollamaModels = [];
     }
   }
 
   async function save() {
-    if (saving) return;
+    if (!cfg) return;
     saving = true;
-    saveErr = "";
-    saveOk = "";
+    error = "";
     try {
-      const status = await Loom.saveSettings(provider, model, endpoint, apiKeyEnv);
-      if (!status.ok) {
-        saveErr = status.error ?? "save failed";
-      } else {
-        saveOk = `connected to ${status.llm_name}`;
-        bootError = "";
+      const status = await Loom.saveSettings(cfg);
+      if (status.error) {
+        error = status.error;
+        return;
       }
-      onSaved();
+      onSaved(status);
+      onClose();
     } catch (e: any) {
-      saveErr = e?.message ?? String(e);
+      error = e?.message ?? String(e);
     } finally {
       saving = false;
     }
   }
-
-  function presetEndpoint(): string {
-    switch (provider) {
-      case "ollama":    return "http://localhost:11434";
-      case "openai":    return "https://api.openai.com";
-      case "anthropic": return "https://api.anthropic.com";
-    }
-  }
-
-  function placeholderModel(): string {
-    switch (provider) {
-      case "ollama":    return "e.g. qwen3.5:9b or gpt-oss:20b-cloud";
-      case "openai":    return "e.g. gpt-4o-mini";
-      case "anthropic": return "e.g. claude-sonnet-4-6";
-    }
-  }
 </script>
 
-<section class="settings">
-  <header>
-    <h2>Settings</h2>
-    {#if configPath}
-      <p class="dim">config: <code>{configPath}</code></p>
-    {/if}
-  </header>
+<div class="backdrop" on:click={onClose}>
+  <div class="modal" on:click|stopPropagation>
+    <header>
+      <h2>Settings</h2>
+      <button class="x" on:click={onClose} aria-label="Close">×</button>
+    </header>
 
-  {#if !loaded || loading}
-    <p class="dim">loading…</p>
-  {:else}
-    {#if bootError}
-      <div class="banner error">
-        <strong>Engine couldn't start:</strong> {bootError}
-      </div>
-    {/if}
+    {#if !cfg}
+      <p class="dim">caricamento…</p>
+    {:else}
+      <div class="form">
+        <label>
+          <span>Notes folder</span>
+          <input type="text" bind:value={cfg.NotesDir} />
+          <small>Cartella dove Loom legge i tuoi file. Trascinaci dentro md/pdf/html/txt.</small>
+        </label>
 
-    <fieldset disabled={saving}>
-      <label>
-        <span>provider</span>
-        <div class="radios">
-          {#each ["ollama", "openai", "anthropic"] as p}
-            <label class="radio">
-              <input type="radio" bind:group={provider} value={p}
-                on:change={() => { endpoint = endpoint || presetEndpoint(); if (p === "ollama") refreshModels(); }} />
-              {p}
-            </label>
-          {/each}
-        </div>
-      </label>
+        <label>
+          <span>Index database</span>
+          <input type="text" bind:value={cfg.DBPath} />
+          <small>SQLite. Cancellabile: si rigenera al prossimo scan.</small>
+        </label>
 
-      <label>
-        <span>model</span>
-        {#if provider === "ollama"}
-          <div class="row">
-            <select bind:value={model} class="grow" disabled={availableModels.length === 0}>
-              {#if availableModels.length === 0}
-                <option value="">{modelsLoading ? "loading…" : "(no models loaded)"}</option>
-              {:else}
-                {#each availableModels as m}
-                  <option value={m.name}>{m.name}</option>
-                {/each}
-              {/if}
+        <fieldset>
+          <legend>LLM</legend>
+          <label>
+            <span>Provider</span>
+            <select bind:value={cfg.LLM.Provider} on:change={refreshOllamaModels}>
+              <option value="ollama">Ollama (locale)</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
             </select>
-            <input type="text" bind:value={model} placeholder={placeholderModel()} />
-            <button type="button" on:click={refreshModels} title="re-query /api/tags" disabled={modelsLoading}>↻</button>
-          </div>
-          <small class="dim">pick from your Ollama tags or type a model name manually (cloud-suffix models work too)</small>
-          {#if modelsErr}
-            <small class="warn">{modelsErr}</small>
+          </label>
+
+          {#if cfg.LLM.Provider === "ollama"}
+            <label>
+              <span>Endpoint</span>
+              <input type="text" bind:value={cfg.LLM.Endpoint} on:blur={refreshOllamaModels} />
+            </label>
+            <label>
+              <span>Model</span>
+              {#if ollamaModels.length > 0}
+                <select bind:value={cfg.LLM.Model}>
+                  {#each ollamaModels as m}<option value={m}>{m}</option>{/each}
+                </select>
+              {:else}
+                <input type="text" bind:value={cfg.LLM.Model} placeholder="llama3.1:8b" />
+                <small>Ollama non raggiungibile a {cfg.LLM.Endpoint}. Imposta manualmente il modello.</small>
+              {/if}
+            </label>
+          {:else}
+            <label>
+              <span>Model</span>
+              <input type="text" bind:value={cfg.LLM.Model} />
+            </label>
+            <label>
+              <span>Endpoint (opzionale)</span>
+              <input type="text" bind:value={cfg.LLM.Endpoint} placeholder="lascia vuoto per il default" />
+            </label>
+            <label>
+              <span>API key env var</span>
+              <input type="text" bind:value={cfg.LLM.APIKeyEnv} placeholder={cfg.LLM.Provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"} />
+              <small>Nome della variabile d'ambiente che contiene la chiave. Loom non salva mai la chiave.</small>
+            </label>
           {/if}
-        {:else}
-          <input type="text" bind:value={model} placeholder={placeholderModel()} />
-        {/if}
-      </label>
+        </fieldset>
+      </div>
 
-      <label>
-        <span>endpoint</span>
-        <div class="row">
-          <input type="text" bind:value={endpoint} placeholder={presetEndpoint()} class="grow"
-            on:blur={() => provider === "ollama" && refreshModels()} />
-          {#if provider === "ollama"}
-            <button type="button" on:click={refreshModels}>↻</button>
-          {/if}
-        </div>
-      </label>
+      {#if error}
+        <div class="error">{error}</div>
+      {/if}
 
-      <label>
-        <span>api key env var</span>
-        <input type="text" bind:value={apiKeyEnv} placeholder={provider === "ollama" ? "(unused for Ollama)" : "e.g. OPENAI_API_KEY"} />
-        <small class="dim">name of the environment variable holding the key (the value is never stored)</small>
-      </label>
-    </fieldset>
-
-    {#if saveErr}<div class="banner error">{saveErr}</div>{/if}
-    {#if saveOk}<div class="banner ok">{saveOk}</div>{/if}
-
-    <div class="actions">
-      <button class="primary" on:click={save} disabled={saving || !model}>
-        {saving ? "saving…" : "save & reload"}
-      </button>
-    </div>
-  {/if}
-</section>
+      <footer>
+        <button on:click={onClose} disabled={saving}>Annulla</button>
+        <button class="primary" on:click={save} disabled={saving}>
+          {saving ? "salvataggio…" : "Salva"}
+        </button>
+      </footer>
+    {/if}
+  </div>
+</div>
 
 <style>
-  .settings {
-    padding: 1.5rem 2rem;
-    max-width: 640px;
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 22, 30, 0.4);
+    display: grid;
+    place-items: center;
+    z-index: 50;
+    backdrop-filter: blur(2px);
+  }
+  .modal {
+    background: white;
+    border-radius: 12px;
+    width: min(540px, 92vw);
+    max-height: 88vh;
     display: flex;
     flex-direction: column;
-    gap: 1.2rem;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.25);
   }
-  header h2 {
-    margin: 0 0 0.3rem;
-    font-weight: 500;
+  header {
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
   }
-  header .dim {
-    margin: 0;
-    font-size: 0.78rem;
-    color: var(--muted);
-  }
-  code {
-    font-family: var(--mono);
-    background: var(--panel);
-    padding: 1px 5px;
-    border-radius: 4px;
-  }
-  fieldset {
+  header h2 { margin: 0; font-size: 1.05rem; font-weight: 600; }
+  .x {
+    background: transparent;
     border: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
+    font-size: 1.5rem;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 0.3rem;
+  }
+  .x:hover { color: var(--text); }
+
+  .form {
+    padding: 1.25rem;
+    overflow-y: auto;
   }
   label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
+    display: block;
+    margin-bottom: 1rem;
   }
   label > span {
-    font-size: 0.74rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    display: block;
+    font-size: 0.8rem;
     color: var(--muted);
+    margin-bottom: 0.3rem;
+    font-weight: 500;
   }
   input[type="text"], select {
-    font: inherit;
-    padding: 0.45rem 0.6rem;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: white;
     width: 100%;
-  }
-  .row {
-    display: flex;
-    gap: 0.4rem;
-  }
-  .row .grow { flex: 1; }
-  .row button {
-    padding: 0.45rem 0.7rem;
+    padding: 0.5rem 0.7rem;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: white;
-    cursor: pointer;
     font: inherit;
+    font-size: 0.9rem;
+    background: white;
+    box-sizing: border-box;
   }
-  .radios {
-    display: flex;
-    gap: 0.6rem;
-  }
-  .radio {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.3rem;
-    cursor: pointer;
-    font-size: 0.86rem;
-    color: var(--text);
-    text-transform: none;
-    letter-spacing: 0;
+  input[type="text"]:focus, select:focus {
+    outline: 2px solid var(--accent-soft);
+    border-color: var(--accent);
   }
   small {
+    display: block;
     font-size: 0.74rem;
+    color: var(--muted);
+    margin-top: 0.25rem;
   }
-  small.dim { color: var(--muted); }
-  small.warn { color: #b04a4a; }
+  fieldset {
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 1rem 1rem 0.4rem;
+    margin: 1rem 0 0;
+  }
+  legend {
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0 0.4rem;
+  }
 
-  .banner {
-    padding: 0.6rem 0.9rem;
+  .error {
+    margin: 0 1.25rem 1rem;
+    padding: 0.6rem 0.85rem;
+    background: #fbe9e9;
+    color: #8a3a3a;
     border-radius: 6px;
     font-size: 0.86rem;
   }
-  .banner.error { background: #fdecec; color: #8a3a3a; }
-  .banner.ok { background: #ecf5ec; color: #2e6a3e; }
 
-  .actions {
+  footer {
+    padding: 0.85rem 1.25rem;
+    border-top: 1px solid var(--border);
     display: flex;
     justify-content: flex-end;
+    gap: 0.5rem;
   }
-  .actions button {
-    padding: 0.55rem 1.2rem;
+  footer button {
+    padding: 0.5rem 1rem;
     border-radius: 6px;
-    border: none;
-    background: var(--accent);
-    color: white;
+    border: 1px solid var(--border);
+    background: white;
     cursor: pointer;
     font: inherit;
   }
-  .actions button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  footer button:hover { border-color: var(--accent); }
+  footer button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  footer .primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+    font-weight: 500;
   }
+  footer .primary:hover:not([disabled]) { background: var(--accent-strong); }
 </style>

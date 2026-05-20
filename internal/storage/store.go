@@ -1,3 +1,6 @@
+// Package storage owns the SQLite index. The filesystem holds the truth (one
+// folder of files); the DB just speeds up lookups and keeps LLM-generated
+// summaries+keywords next to each file.
 package storage
 
 import (
@@ -13,23 +16,8 @@ import (
 
 var ErrNotFound = errors.New("storage: not found")
 
-// execer is the minimal surface we need to run queries; both *sql.DB and
-// *sql.Tx implement it, which lets the CRUD helpers below work transparently
-// inside or outside a transaction.
-type execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 type Store struct {
 	db *sql.DB
-}
-
-// Tx is a transactional handle that exposes the same CRUD surface as Store
-// but batches writes under a single SQLite transaction.
-type Tx struct {
-	tx *sql.Tx
 }
 
 func Open(path string) (*Store, error) {
@@ -57,549 +45,152 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) DB() *sql.DB { return s.db }
 
-// WithTx runs fn inside a SQLite transaction. If fn returns an error, the
-// transaction is rolled back and that error is returned; otherwise the
-// transaction is committed.
-func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+// Upsert writes (or replaces) the row keyed by RelPath. The triggers on
+// `files` keep the FTS index in sync.
+func (s *Store) Upsert(ctx context.Context, f *File) error {
+	kw, err := json.Marshal(f.Keywords)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return fmt.Errorf("marshal keywords: %w", err)
 	}
-	if err := fn(&Tx{tx: tx}); err != nil {
-		_ = tx.Rollback()
-		return err
+	if len(f.Keywords) == 0 {
+		kw = []byte("[]")
 	}
-	return tx.Commit()
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO files (rel_path, hash, mtime, kind, title, content, summary, keywords)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(rel_path) DO UPDATE SET
+			hash       = excluded.hash,
+			mtime      = excluded.mtime,
+			kind       = excluded.kind,
+			title      = excluded.title,
+			content    = excluded.content,
+			summary    = excluded.summary,
+			keywords   = excluded.keywords,
+			indexed_at = CURRENT_TIMESTAMP
+	`, f.RelPath, f.Hash, f.MTime, f.Kind, f.Title, f.Content, f.Summary, string(kw))
+	return err
 }
 
-// ---------------------------------------------------------------------------
-// sources
-// ---------------------------------------------------------------------------
-
-func createSource(ctx context.Context, q execer, src *Source) error {
-	res, err := q.ExecContext(ctx,
-		`INSERT INTO sources (uri, kind, title, content, hash, metadata)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		src.URI, src.Kind, src.Title, src.Content, src.Hash, nullStringJSON(src.Metadata),
-	)
-	if err != nil {
-		return fmt.Errorf("insert source: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	src.ID = id
-	return nil
+func (s *Store) Delete(ctx context.Context, relPath string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM files WHERE rel_path = ?`, relPath)
+	return err
 }
 
-func (s *Store) CreateSource(ctx context.Context, src *Source) error {
-	return createSource(ctx, s.db, src)
-}
-func (t *Tx) CreateSource(ctx context.Context, src *Source) error {
-	return createSource(ctx, t.tx, src)
-}
-
-func getSourceByHash(ctx context.Context, q execer, hash string) (*Source, error) {
-	row := q.QueryRowContext(ctx,
-		`SELECT id, uri, kind, title, content, hash, ingested_at, metadata
-		   FROM sources WHERE hash = ?`, hash)
-	return scanSource(row)
+// GetByRelPath returns the file row, or ErrNotFound.
+func (s *Store) GetByRelPath(ctx context.Context, relPath string) (*File, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, rel_path, hash, mtime, kind, title, content, summary, keywords, indexed_at
+		FROM files WHERE rel_path = ?`, relPath)
+	return scanFile(row.Scan)
 }
 
-func (s *Store) GetSourceByHash(ctx context.Context, hash string) (*Source, error) {
-	return getSourceByHash(ctx, s.db, hash)
-}
-func (t *Tx) GetSourceByHash(ctx context.Context, hash string) (*Source, error) {
-	return getSourceByHash(ctx, t.tx, hash)
-}
-
-func getSource(ctx context.Context, q execer, id int64) (*Source, error) {
-	row := q.QueryRowContext(ctx,
-		`SELECT id, uri, kind, title, content, hash, ingested_at, metadata
-		   FROM sources WHERE id = ?`, id)
-	return scanSource(row)
-}
-
-func (s *Store) GetSource(ctx context.Context, id int64) (*Source, error) {
-	return getSource(ctx, s.db, id)
-}
-func (t *Tx) GetSource(ctx context.Context, id int64) (*Source, error) {
-	return getSource(ctx, t.tx, id)
-}
-
-// ---------------------------------------------------------------------------
-// notes
-// ---------------------------------------------------------------------------
-
-func createNote(ctx context.Context, q execer, n *Note) error {
-	kw, err := json.Marshal(n.Keywords)
-	if err != nil {
-		return err
-	}
-	res, err := q.ExecContext(ctx,
-		`INSERT INTO notes (slug, title, kind, content, summary, keywords)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		n.Slug, n.Title, n.Kind, n.Content, n.Summary, string(kw),
-	)
-	if err != nil {
-		return fmt.Errorf("insert note: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	n.ID = id
-	n.Version = 1
-	return nil
-}
-
-func (s *Store) CreateNote(ctx context.Context, n *Note) error {
-	return createNote(ctx, s.db, n)
-}
-func (t *Tx) CreateNote(ctx context.Context, n *Note) error {
-	return createNote(ctx, t.tx, n)
-}
-
-func getNoteBySlug(ctx context.Context, q execer, slug string) (*Note, error) {
-	row := q.QueryRowContext(ctx,
-		`SELECT id, slug, title, kind, content, summary, keywords, created_at, updated_at, version
-		   FROM notes WHERE slug = ?`, slug)
-	return scanNote(row)
-}
-
-func (s *Store) GetNoteBySlug(ctx context.Context, slug string) (*Note, error) {
-	return getNoteBySlug(ctx, s.db, slug)
-}
-func (t *Tx) GetNoteBySlug(ctx context.Context, slug string) (*Note, error) {
-	return getNoteBySlug(ctx, t.tx, slug)
-}
-
-func getNote(ctx context.Context, q execer, id int64) (*Note, error) {
-	row := q.QueryRowContext(ctx,
-		`SELECT id, slug, title, kind, content, summary, keywords, created_at, updated_at, version
-		   FROM notes WHERE id = ?`, id)
-	return scanNote(row)
-}
-
-func (s *Store) GetNote(ctx context.Context, id int64) (*Note, error) {
-	return getNote(ctx, s.db, id)
-}
-func (t *Tx) GetNote(ctx context.Context, id int64) (*Note, error) {
-	return getNote(ctx, t.tx, id)
-}
-
-// updateNoteInline archives the current version and writes the new one under
-// the provided execer; the caller is responsible for transactionality if
-// atomicity matters.
-func updateNoteInline(ctx context.Context, q execer, n *Note, reason string) error {
-	var prevContent string
-	var prevVersion int
-	err := q.QueryRowContext(ctx,
-		`SELECT content, version FROM notes WHERE id = ?`, n.ID,
-	).Scan(&prevContent, &prevVersion)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		return err
-	}
-
-	if _, err := q.ExecContext(ctx,
-		`INSERT INTO note_versions (note_id, version, content, reason)
-		 VALUES (?, ?, ?, ?)`,
-		n.ID, prevVersion, prevContent, reason,
-	); err != nil {
-		return fmt.Errorf("archive prev version: %w", err)
-	}
-
-	kw, err := json.Marshal(n.Keywords)
-	if err != nil {
-		return err
-	}
-	newVersion := prevVersion + 1
-	_, err = q.ExecContext(ctx,
-		`UPDATE notes
-		    SET title = ?, kind = ?, content = ?, summary = ?, keywords = ?,
-		        updated_at = CURRENT_TIMESTAMP, version = ?
-		  WHERE id = ?`,
-		n.Title, n.Kind, n.Content, n.Summary, string(kw), newVersion, n.ID,
-	)
-	if err != nil {
-		return fmt.Errorf("update note: %w", err)
-	}
-	n.Version = newVersion
-	return nil
-}
-
-// UpdateNote runs the archive+update under a dedicated transaction so the two
-// writes stay atomic when called outside of an outer tx.
-func (s *Store) UpdateNote(ctx context.Context, n *Note, reason string) error {
-	return s.WithTx(ctx, func(tx *Tx) error {
-		return updateNoteInline(ctx, tx.tx, n, reason)
-	})
-}
-
-// UpdateNote on *Tx trusts the caller's outer transaction and doesn't open a
-// nested one.
-func (t *Tx) UpdateNote(ctx context.Context, n *Note, reason string) error {
-	return updateNoteInline(ctx, t.tx, n, reason)
-}
-
-func listNotes(ctx context.Context, q execer, kind string, limit, offset int) ([]*Note, error) {
-	query := `SELECT id, slug, title, kind, content, summary, keywords, created_at, updated_at, version
-	            FROM notes`
-	args := []any{}
-	if kind != "" {
-		query += ` WHERE kind = ?`
-		args = append(args, kind)
-	}
-	query += ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
-	args = append(args, limit, offset)
-
-	rows, err := q.QueryContext(ctx, query, args...)
+// List returns all files ordered by rel_path. Used by the GUI sidebar and the
+// scan reconciliation pass.
+func (s *Store) List(ctx context.Context) ([]*File, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, rel_path, hash, mtime, kind, title, content, summary, keywords, indexed_at
+		FROM files ORDER BY rel_path`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []*Note
+	var out []*File
 	for rows.Next() {
-		n, err := scanNote(rows)
+		f, err := scanFile(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, n)
+		out = append(out, f)
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) ListNotes(ctx context.Context, kind string, limit, offset int) ([]*Note, error) {
-	return listNotes(ctx, s.db, kind, limit, offset)
-}
-func (t *Tx) ListNotes(ctx context.Context, kind string, limit, offset int) ([]*Note, error) {
-	return listNotes(ctx, t.tx, kind, limit, offset)
-}
-
-// ---------------------------------------------------------------------------
-// links
-// ---------------------------------------------------------------------------
-
-func createLink(ctx context.Context, q execer, l *Link) error {
-	res, err := q.ExecContext(ctx,
-		`INSERT INTO links (from_note_id, from_source_id, to_note_id, to_source_id, kind, context)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		nullableInt(l.FromNoteID), nullableInt(l.FromSourceID),
-		nullableInt(l.ToNoteID), nullableInt(l.ToSourceID),
-		string(l.Kind), l.Context,
-	)
-	if err != nil {
-		return fmt.Errorf("insert link: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	l.ID = id
-	return nil
-}
-
-func (s *Store) CreateLink(ctx context.Context, l *Link) error {
-	return createLink(ctx, s.db, l)
-}
-func (t *Tx) CreateLink(ctx context.Context, l *Link) error {
-	return createLink(ctx, t.tx, l)
-}
-
-func linksFromNote(ctx context.Context, q execer, noteID int64) ([]*Link, error) {
-	rows, err := q.QueryContext(ctx,
-		`SELECT id, from_note_id, from_source_id, to_note_id, to_source_id, kind, context
-		   FROM links WHERE from_note_id = ?`, noteID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanLinks(rows)
-}
-
-func (s *Store) LinksFromNote(ctx context.Context, noteID int64) ([]*Link, error) {
-	return linksFromNote(ctx, s.db, noteID)
-}
-func (t *Tx) LinksFromNote(ctx context.Context, noteID int64) ([]*Link, error) {
-	return linksFromNote(ctx, t.tx, noteID)
-}
-
-func linksToNote(ctx context.Context, q execer, noteID int64) ([]*Link, error) {
-	rows, err := q.QueryContext(ctx,
-		`SELECT id, from_note_id, from_source_id, to_note_id, to_source_id, kind, context
-		   FROM links WHERE to_note_id = ?`, noteID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanLinks(rows)
-}
-
-func (s *Store) LinksToNote(ctx context.Context, noteID int64) ([]*Link, error) {
-	return linksToNote(ctx, s.db, noteID)
-}
-func (t *Tx) LinksToNote(ctx context.Context, noteID int64) ([]*Link, error) {
-	return linksToNote(ctx, t.tx, noteID)
-}
-
-// ---------------------------------------------------------------------------
-// chunks
-// ---------------------------------------------------------------------------
-
-func createChunk(ctx context.Context, q execer, c *Chunk) error {
-	res, err := q.ExecContext(ctx,
-		`INSERT INTO chunks (source_id, note_id, content, position, tokens)
-		 VALUES (?, ?, ?, ?, ?)`,
-		nullableInt(c.SourceID), nullableInt(c.NoteID),
-		c.Content, c.Position, c.Tokens,
-	)
-	if err != nil {
-		return fmt.Errorf("insert chunk: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	c.ID = id
-	return nil
-}
-
-func (s *Store) CreateChunk(ctx context.Context, c *Chunk) error {
-	return createChunk(ctx, s.db, c)
-}
-func (t *Tx) CreateChunk(ctx context.Context, c *Chunk) error {
-	return createChunk(ctx, t.tx, c)
-}
-
-func getChunk(ctx context.Context, q execer, id int64) (*Chunk, error) {
-	row := q.QueryRowContext(ctx,
-		`SELECT id, source_id, note_id, content, position, tokens
-		   FROM chunks WHERE id = ?`, id)
-	var c Chunk
-	var srcID, noteID, tokens sql.NullInt64
-	err := row.Scan(&c.ID, &srcID, &noteID, &c.Content, &c.Position, &tokens)
-	if errors.Is(err, sql.ErrNoRows) {
+// Search runs an FTS5 BM25 query and returns up to limit hits, ordered best
+// first. Empty query returns ErrNotFound.
+func (s *Store) Search(ctx context.Context, query string, limit int) ([]*Hit, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
 		return nil, ErrNotFound
 	}
+	if limit <= 0 {
+		limit = 5
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT f.id, f.rel_path, f.hash, f.mtime, f.kind, f.title, f.content,
+		       f.summary, f.keywords, f.indexed_at, bm25(files_fts) AS rank
+		FROM files_fts
+		JOIN files f ON f.id = files_fts.rowid
+		WHERE files_fts MATCH ?
+		ORDER BY rank
+		LIMIT ?`, ftsQuery(q), limit)
 	if err != nil {
 		return nil, err
 	}
-	if srcID.Valid {
-		v := srcID.Int64
-		c.SourceID = &v
-	}
-	if noteID.Valid {
-		v := noteID.Int64
-		c.NoteID = &v
-	}
-	if tokens.Valid {
-		c.Tokens = int(tokens.Int64)
-	}
-	return &c, nil
-}
-
-func (s *Store) GetChunk(ctx context.Context, id int64) (*Chunk, error) {
-	return getChunk(ctx, s.db, id)
-}
-func (t *Tx) GetChunk(ctx context.Context, id int64) (*Chunk, error) {
-	return getChunk(ctx, t.tx, id)
-}
-
-// ---------------------------------------------------------------------------
-// FTS5 search index
-// ---------------------------------------------------------------------------
-
-func indexNote(ctx context.Context, q execer, n *Note) error {
-	ref := fmt.Sprintf("note:%d", n.ID)
-	if _, err := q.ExecContext(ctx,
-		`DELETE FROM search_index WHERE entity_ref = ?`, ref,
-	); err != nil {
-		return err
-	}
-	kw := strings.Join(n.Keywords, " ")
-	_, err := q.ExecContext(ctx,
-		`INSERT INTO search_index (title, content, keywords, summary, kind, entity_ref)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		n.Title, n.Content, kw, n.Summary, n.Kind, ref,
-	)
-	return err
-}
-
-func (s *Store) IndexNote(ctx context.Context, n *Note) error {
-	return indexNote(ctx, s.db, n)
-}
-func (t *Tx) IndexNote(ctx context.Context, n *Note) error {
-	return indexNote(ctx, t.tx, n)
-}
-
-func indexChunk(ctx context.Context, q execer, c *Chunk, title string) error {
-	ref := fmt.Sprintf("chunk:%d", c.ID)
-	if _, err := q.ExecContext(ctx,
-		`DELETE FROM search_index WHERE entity_ref = ?`, ref,
-	); err != nil {
-		return err
-	}
-	_, err := q.ExecContext(ctx,
-		`INSERT INTO search_index (title, content, keywords, summary, kind, entity_ref)
-		 VALUES (?, ?, '', '', 'chunk', ?)`,
-		title, c.Content, ref,
-	)
-	return err
-}
-
-func (s *Store) IndexChunk(ctx context.Context, c *Chunk, title string) error {
-	return indexChunk(ctx, s.db, c, title)
-}
-func (t *Tx) IndexChunk(ctx context.Context, c *Chunk, title string) error {
-	return indexChunk(ctx, t.tx, c, title)
-}
-
-// Search runs a BM25 query. Higher score = more relevant (we return -rank so
-// callers can sort descending).
-func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT entity_ref, title, snippet(search_index, 1, '<b>', '</b>', '…', 12),
-		        -bm25(search_index), kind
-		   FROM search_index
-		  WHERE search_index MATCH ?
-		  ORDER BY bm25(search_index)
-		  LIMIT ?`,
-		query, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("fts search: %w", err)
-	}
 	defer rows.Close()
 
-	var out []SearchHit
+	var out []*Hit
 	for rows.Next() {
-		var h SearchHit
-		if err := rows.Scan(&h.EntityRef, &h.Title, &h.Snippet, &h.Score, &h.Kind); err != nil {
+		var h Hit
+		var keywordsJSON string
+		if err := rows.Scan(
+			&h.ID, &h.RelPath, &h.Hash, &h.MTime, &h.Kind, &h.Title, &h.Content,
+			&h.Summary, &keywordsJSON, &h.IndexedAt, &h.Rank,
+		); err != nil {
 			return nil, err
 		}
-		out = append(out, h)
+		_ = json.Unmarshal([]byte(keywordsJSON), &h.Keywords)
+		out = append(out, &h)
 	}
 	return out, rows.Err()
 }
 
-// ---------------------------------------------------------------------------
-// operations log
-// ---------------------------------------------------------------------------
+// Count returns the total number of indexed files.
+func (s *Store) Count(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM files`).Scan(&n)
+	return n, err
+}
 
-func logOperation(ctx context.Context, q execer, op *Operation) error {
-	res, err := q.ExecContext(ctx,
-		`INSERT INTO operations (kind, actor, summary, details)
-		 VALUES (?, ?, ?, ?)`,
-		op.Kind, op.Actor, op.Summary, nullStringJSON(op.Details),
+// scanFile decodes a row into a File. The argument matches both *sql.Row.Scan
+// and *sql.Rows.Scan signatures.
+func scanFile(scan func(...any) error) (*File, error) {
+	var f File
+	var keywordsJSON string
+	err := scan(
+		&f.ID, &f.RelPath, &f.Hash, &f.MTime, &f.Kind, &f.Title, &f.Content,
+		&f.Summary, &keywordsJSON, &f.IndexedAt,
 	)
-	if err != nil {
-		return err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	op.ID = id
-	return nil
-}
-
-func (s *Store) LogOperation(ctx context.Context, op *Operation) error {
-	return logOperation(ctx, s.db, op)
-}
-func (t *Tx) LogOperation(ctx context.Context, op *Operation) error {
-	return logOperation(ctx, t.tx, op)
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanSource(row rowScanner) (*Source, error) {
-	var s Source
-	var meta sql.NullString
-	err := row.Scan(&s.ID, &s.URI, &s.Kind, &s.Title, &s.Content, &s.Hash, &s.IngestedAt, &meta)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	if meta.Valid {
-		s.Metadata = json.RawMessage(meta.String)
-	}
-	return &s, nil
+	_ = json.Unmarshal([]byte(keywordsJSON), &f.Keywords)
+	return &f, nil
 }
 
-func scanNote(row rowScanner) (*Note, error) {
-	var n Note
-	var kw string
-	err := row.Scan(&n.ID, &n.Slug, &n.Title, &n.Kind, &n.Content, &n.Summary, &kw,
-		&n.CreatedAt, &n.UpdatedAt, &n.Version)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+// ftsQuery prepares user input for SQLite FTS5. It strips characters that
+// would otherwise be interpreted as syntax (quotes, parens, colons, the NEAR
+// operator, etc.) and joins the remaining tokens with OR so that a hit on any
+// term still matches. Anything that becomes empty after sanitisation falls
+// back to a single space, which makes FTS return zero rows rather than error.
+func ftsQuery(q string) string {
+	repl := strings.NewReplacer(
+		`"`, " ", `'`, " ", `(`, " ", `)`, " ",
+		`:`, " ", `*`, " ", `^`, " ", `-`, " ",
+		`+`, " ", `.`, " ", `,`, " ", `?`, " ",
+		`!`, " ", `;`, " ",
+	)
+	cleaned := repl.Replace(q)
+	fields := strings.Fields(cleaned)
+	if len(fields) == 0 {
+		return " "
 	}
-	if err != nil {
-		return nil, err
+	for i, f := range fields {
+		fields[i] = `"` + f + `"`
 	}
-	if kw != "" {
-		if err := json.Unmarshal([]byte(kw), &n.Keywords); err != nil {
-			return nil, fmt.Errorf("decode keywords: %w", err)
-		}
-	}
-	return &n, nil
-}
-
-func scanLinks(rows *sql.Rows) ([]*Link, error) {
-	var out []*Link
-	for rows.Next() {
-		var l Link
-		var fromNote, fromSource, toNote, toSource sql.NullInt64
-		var kind, ctx sql.NullString
-		if err := rows.Scan(&l.ID, &fromNote, &fromSource, &toNote, &toSource, &kind, &ctx); err != nil {
-			return nil, err
-		}
-		if fromNote.Valid {
-			v := fromNote.Int64
-			l.FromNoteID = &v
-		}
-		if fromSource.Valid {
-			v := fromSource.Int64
-			l.FromSourceID = &v
-		}
-		if toNote.Valid {
-			v := toNote.Int64
-			l.ToNoteID = &v
-		}
-		if toSource.Valid {
-			v := toSource.Int64
-			l.ToSourceID = &v
-		}
-		l.Kind = LinkKind(kind.String)
-		l.Context = ctx.String
-		out = append(out, &l)
-	}
-	return out, rows.Err()
-}
-
-func nullableInt(p *int64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullStringJSON(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
-	}
-	return string(raw)
+	return strings.Join(fields, " OR ")
 }
