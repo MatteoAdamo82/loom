@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/template"
 
 	"github.com/BurntSushi/toml"
 )
@@ -64,13 +63,102 @@ func Save(cfg *Config, path string) error {
 	return writeTemplate(cfg, f)
 }
 
-// configTemplate is the annotated template written by loom init.
-// It keeps the active provider uncommented and shows the others as examples.
-var configTemplate = template.Must(template.New("config").Parse(`# Loom configuration — edit this file to change provider, model, or folder paths.
+// writeTemplate writes an annotated config to w. The provider block matching
+// cfg.LLM.Provider is left uncommented; the other two are shown as examples.
+func writeTemplate(cfg *Config, w io.Writer) error {
+	type providerBlock struct {
+		name    string
+		label   string
+		lines   []string
+		example []string // fallback example when not active
+	}
+
+	// Determine active values, falling back to defaults for each provider.
+	active := cfg.LLM.Provider
+	if active == "" {
+		active = "ollama"
+	}
+
+	// comment prefixes each line with "# ".
+	comment := func(lines []string) []string {
+		out := make([]string, len(lines))
+		for i, l := range lines {
+			if l == "" {
+				out[i] = "#"
+			} else {
+				out[i] = "# " + l
+			}
+		}
+		return out
+	}
+
+	// active block lines (use cfg values when provider matches).
+	ollamaLines := func() []string {
+		model := cfg.LLM.Model
+		if model == "" || cfg.LLM.Provider != "ollama" {
+			model = "llama3.1:8b"
+		}
+		ep := cfg.LLM.Endpoint
+		if ep == "" || cfg.LLM.Provider != "ollama" {
+			ep = "http://localhost:11434"
+		}
+		return []string{
+			`[llm]`,
+			`provider    = "ollama"`,
+			`model       = "` + model + `"`,
+			`endpoint    = "` + ep + `"`,
+			`api_key_env = ""`,
+		}
+	}
+	anthropicLines := func() []string {
+		model := cfg.LLM.Model
+		if model == "" || cfg.LLM.Provider != "anthropic" {
+			model = "claude-sonnet-4-5"
+		}
+		keyEnv := cfg.LLM.APIKeyEnv
+		if keyEnv == "" || cfg.LLM.Provider != "anthropic" {
+			keyEnv = "ANTHROPIC_API_KEY"
+		}
+		return []string{
+			`[llm]`,
+			`provider    = "anthropic"`,
+			`model       = "` + model + `"`,
+			`api_key_env = "` + keyEnv + `"`,
+		}
+	}
+	openaiLines := func() []string {
+		model := cfg.LLM.Model
+		if model == "" || cfg.LLM.Provider != "openai" {
+			model = "gpt-4o"
+		}
+		keyEnv := cfg.LLM.APIKeyEnv
+		if keyEnv == "" || cfg.LLM.Provider != "openai" {
+			keyEnv = "OPENAI_API_KEY"
+		}
+		return []string{
+			`[llm]`,
+			`provider    = "openai"`,
+			`model       = "` + model + `"`,
+			`api_key_env = "` + keyEnv + `"`,
+		}
+	}
+
+	type block struct {
+		label  string
+		lines  []string
+		active bool
+	}
+	blocks := []block{
+		{"Option 1 — Ollama (local, no API key required)", ollamaLines(), active == "ollama" || active == ""},
+		{"Option 2 — Anthropic Claude", anthropicLines(), active == "anthropic"},
+		{"Option 3 — OpenAI", openaiLines(), active == "openai"},
+	}
+
+	_, err := fmt.Fprintf(w, `# Loom configuration — edit this file to change provider, model, or folder paths.
 # Run "loom scan" after any change.
 
-notes_dir = "{{.NotesDir}}"
-db_path   = "{{.DBPath}}"
+notes_dir = "%s"
+db_path   = "%s"
 
 # ── LLM provider ─────────────────────────────────────────────────────────────
 # Uncomment the block for the provider you want to use.
@@ -81,28 +169,26 @@ db_path   = "{{.DBPath}}"
 #   export ANTHROPIC_API_KEY=sk-ant-...
 #   export OPENAI_API_KEY=sk-...
 
-# Option 1 — Ollama (local, no API key required)
-[llm]
-provider    = "ollama"
-model       = "llama3.1:8b"
-endpoint    = "http://localhost:11434"
-api_key_env = ""
+`, cfg.NotesDir, cfg.DBPath)
+	if err != nil {
+		return err
+	}
 
-# Option 2 — Anthropic Claude
-# [llm]
-# provider    = "anthropic"
-# model       = "claude-sonnet-4-5"
-# api_key_env = "ANTHROPIC_API_KEY"
-
-# Option 3 — OpenAI
-# [llm]
-# provider    = "openai"
-# model       = "gpt-4o"
-# api_key_env = "OPENAI_API_KEY"
-`))
-
-func writeTemplate(cfg *Config, w io.Writer) error {
-	return configTemplate.Execute(w, cfg)
+	for _, b := range blocks {
+		if b.active {
+			fmt.Fprintf(w, "# %s\n", b.label)
+			for _, l := range b.lines {
+				fmt.Fprintln(w, l)
+			}
+		} else {
+			fmt.Fprintf(w, "# %s\n", b.label)
+			for _, l := range comment(b.lines) {
+				fmt.Fprintln(w, l)
+			}
+		}
+		fmt.Fprintln(w)
+	}
+	return nil
 }
 
 // Load reads config from path, merging values over Default(). A missing file
