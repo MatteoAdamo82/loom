@@ -1,12 +1,10 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -20,8 +18,10 @@ type OpenAIConfig struct {
 }
 
 type OpenAIClient struct {
-	cfg OpenAIConfig
-	hc  *http.Client
+	cfg      OpenAIConfig
+	hc       *http.Client // regular calls (with Timeout)
+	streamHC *http.Client // streaming calls (no Timeout — ctx governs)
+	headers  map[string]string
 }
 
 func NewOpenAI(cfg OpenAIConfig) *OpenAIClient {
@@ -29,28 +29,29 @@ func NewOpenAI(cfg OpenAIConfig) *OpenAIClient {
 		cfg.Endpoint = "https://api.openai.com"
 	}
 	cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
-	if cfg.Timeout == 0 {
-		cfg.Timeout = 120 * time.Second
+	hc, streamHC := newHTTPClients(cfg.Timeout)
+	headers := map[string]string{}
+	if cfg.APIKey != "" {
+		headers["Authorization"] = "Bearer " + cfg.APIKey
 	}
-	return &OpenAIClient{
-		cfg: cfg,
-		hc:  &http.Client{Timeout: cfg.Timeout},
-	}
+	return &OpenAIClient{cfg: cfg, hc: hc, streamHC: streamHC, headers: headers}
 }
 
 func (c *OpenAIClient) Name() string { return "openai:" + c.cfg.Model }
 
+// --- wire types ---------------------------------------------------------------
+
 type openAIChatRequest struct {
-	Model          string             `json:"model"`
-	Messages       []openAIMessage    `json:"messages"`
-	Temperature    *float64           `json:"temperature,omitempty"`
-	MaxTokens      *int               `json:"max_tokens,omitempty"`
-	ResponseFormat *openAIRespFormat  `json:"response_format,omitempty"`
-	Stream         bool               `json:"stream,omitempty"`
-	StreamOptions  *streamOptions     `json:"stream_options,omitempty"`
+	Model          string            `json:"model"`
+	Messages       []openAIMessage   `json:"messages"`
+	Temperature    *float64          `json:"temperature,omitempty"`
+	MaxTokens      *int              `json:"max_tokens,omitempty"`
+	ResponseFormat *openAIRespFormat `json:"response_format,omitempty"`
+	Stream         bool              `json:"stream,omitempty"`
+	StreamOptions  *openAIStreamOpts `json:"stream_options,omitempty"`
 }
 
-type streamOptions struct {
+type openAIStreamOpts struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
@@ -83,71 +84,72 @@ type openAIChatResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 	} `json:"usage"`
-	Error *openAIError `json:"error,omitempty"`
+	Error *openAIAPIError `json:"error,omitempty"`
 }
 
-type openAIError struct {
+type openAIAPIError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
 	Code    string `json:"code"`
 }
 
-func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+// --- helpers ------------------------------------------------------------------
+
+func (c *OpenAIClient) convertMessages(msgs []Message) []openAIMessage {
+	out := make([]openAIMessage, len(msgs))
+	for i, m := range msgs {
+		out[i] = openAIMessage{Role: string(m.Role), Content: m.Content}
+	}
+	return out
+}
+
+func (c *OpenAIClient) buildPayload(req ChatRequest, stream bool) ([]byte, error) {
 	model := req.Model
 	if model == "" {
 		model = c.cfg.Model
 	}
-
-	msgs := make([]openAIMessage, len(req.Messages))
-	for i, m := range req.Messages {
-		msgs[i] = openAIMessage{Role: string(m.Role), Content: m.Content}
-	}
-
-	payload := openAIChatRequest{Model: model, Messages: msgs}
+	p := openAIChatRequest{Model: model, Messages: c.convertMessages(req.Messages)}
 	if req.Temperature > 0 {
 		t := req.Temperature
-		payload.Temperature = &t
+		p.Temperature = &t
 	}
 	if req.MaxTokens > 0 {
 		n := req.MaxTokens
-		payload.MaxTokens = &n
+		p.MaxTokens = &n
 	}
 	if req.JSON {
-		payload.ResponseFormat = &openAIRespFormat{Type: "json_object"}
+		p.ResponseFormat = &openAIRespFormat{Type: "json_object"}
 	}
-
-	body, err := json.Marshal(payload)
+	if stream {
+		p.Stream = true
+		p.StreamOptions = &openAIStreamOpts{IncludeUsage: true}
+	}
+	b, err := json.Marshal(p)
 	if err != nil {
 		return nil, fmt.Errorf("marshal openai request: %w", err)
 	}
+	return b, nil
+}
 
-	url := c.cfg.Endpoint + "/v1/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+// --- Client interface ---------------------------------------------------------
+
+func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	body, err := c.buildPayload(req, false)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
-
-	resp, err := c.hc.Do(httpReq)
+	resp, err := postJSON(ctx, c.hc, c.cfg.Endpoint+"/v1/chat/completions", c.headers, body)
 	if err != nil {
-		return nil, fmt.Errorf("openai http: %w", err)
+		return nil, fmt.Errorf("openai: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai status %d: %s", resp.StatusCode, bytes.TrimSpace(b))
-	}
 
 	var out openAIChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode openai response: %w", err)
 	}
 	if out.Error != nil {
-		return nil, fmt.Errorf("openai error: %s", out.Error.Message)
+		return nil, fmt.Errorf("openai api error: %s", out.Error.Message)
 	}
 	if len(out.Choices) == 0 {
 		return nil, fmt.Errorf("openai returned no choices")
@@ -161,114 +163,57 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 }
 
 // Stream emits successive content deltas via Server-Sent Events. The terminal
-// `data: [DONE]` line marks end-of-stream. We optionally request a final
-// `usage` frame so token counts are populated when available.
+// `data: [DONE]` line marks end-of-stream. A final `usage` frame populates
+// token counts when the API supports it.
 func (c *OpenAIClient) Stream(ctx context.Context, req ChatRequest, onChunk func(string)) (*ChatResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = c.cfg.Model
-	}
-
-	msgs := make([]openAIMessage, len(req.Messages))
-	for i, m := range req.Messages {
-		msgs[i] = openAIMessage{Role: string(m.Role), Content: m.Content}
-	}
-
-	payload := openAIChatRequest{
-		Model:         model,
-		Messages:      msgs,
-		Stream:        true,
-		StreamOptions: &streamOptions{IncludeUsage: true},
-	}
-	if req.Temperature > 0 {
-		t := req.Temperature
-		payload.Temperature = &t
-	}
-	if req.MaxTokens > 0 {
-		n := req.MaxTokens
-		payload.MaxTokens = &n
-	}
-	if req.JSON {
-		payload.ResponseFormat = &openAIRespFormat{Type: "json_object"}
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal openai request: %w", err)
-	}
-
-	url := c.cfg.Endpoint + "/v1/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	body, err := c.buildPayload(req, true)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if c.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	hdrs := make(map[string]string, len(c.headers)+1)
+	for k, v := range c.headers {
+		hdrs[k] = v
 	}
+	hdrs["Accept"] = "text/event-stream"
 
-	streamHC := &http.Client{}
-	resp, err := streamHC.Do(httpReq)
+	resp, err := postJSON(ctx, c.streamHC, c.cfg.Endpoint+"/v1/chat/completions", hdrs, body)
 	if err != nil {
-		return nil, fmt.Errorf("openai http: %w", err)
+		return nil, fmt.Errorf("openai: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("openai status %d: %s", resp.StatusCode, bytes.TrimSpace(b))
-	}
-
-	var (
-		full         strings.Builder
-		lastModel    string
-		promptTokens int
-		evalTokens   int
-	)
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	var acc streamAccumulator
+	sc := newStreamScanner(resp.Body)
+	for sc.Scan() {
+		line := sc.Bytes()
 		if !bytes.HasPrefix(line, []byte("data:")) {
-			// SSE comment / blank line / `event:` lines — ignore.
-			continue
+			continue // SSE comments, blank lines, event: lines
 		}
 		data := bytes.TrimSpace(line[len("data:"):])
-		if len(data) == 0 {
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			if bytes.Equal(data, []byte("[DONE]")) {
+				break
+			}
 			continue
-		}
-		if bytes.Equal(data, []byte("[DONE]")) {
-			break
 		}
 		var frame openAIStreamFrame
 		if err := json.Unmarshal(data, &frame); err != nil {
 			return nil, fmt.Errorf("decode openai stream frame: %w", err)
 		}
-		if frame.Model != "" {
-			lastModel = frame.Model
-		}
 		for _, ch := range frame.Choices {
-			if ch.Delta.Content != "" {
-				full.WriteString(ch.Delta.Content)
+			if chunk := ch.Delta.Content; chunk != "" {
+				acc.append(chunk, frame.Model)
 				if onChunk != nil {
-					onChunk(ch.Delta.Content)
+					onChunk(chunk)
 				}
 			}
 		}
 		if frame.Usage != nil {
-			promptTokens = frame.Usage.PromptTokens
-			evalTokens = frame.Usage.CompletionTokens
+			acc.setTokens(frame.Usage.PromptTokens, frame.Usage.CompletionTokens)
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("read openai stream: %w", err)
 	}
-
-	return &ChatResponse{
-		Content:      full.String(),
-		Model:        lastModel,
-		PromptTokens: promptTokens,
-		OutputTokens: evalTokens,
-	}, nil
+	return acc.result(), nil
 }

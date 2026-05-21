@@ -85,8 +85,8 @@ func TestAnswerWithEmptyIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(res.Answer), "nessuna nota") {
-		t.Errorf("expected empty-index sentinel, got %q", res.Answer)
+	if res.Answer != noIndexedNotesMsg {
+		t.Errorf("expected empty-index sentinel %q, got %q", noIndexedNotesMsg, res.Answer)
 	}
 }
 

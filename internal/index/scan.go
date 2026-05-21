@@ -32,6 +32,15 @@ type Result struct {
 	Duration time.Duration
 }
 
+// processOutcome classifies the result of processing a single file.
+type processOutcome int
+
+const (
+	outcomeAdded   processOutcome = iota
+	outcomeMoved                  // same content, new path — LLM call skipped
+	outcomeUpdated                // content changed — LLM called
+)
+
 type FileError struct {
 	RelPath string
 	Err     error
@@ -100,10 +109,14 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 	for _, f := range known {
 		knownByPath[f.RelPath] = f
 		// Only keep the first record per hash so moves are deterministic.
+		// knownByHash is read-only during the concurrent processing phase.
 		if _, dup := knownByHash[f.Hash]; !dup {
 			knownByHash[f.Hash] = f
 		}
 	}
+	// lookupByHash is a closure over the read-only map. Passing a function
+	// instead of the whole map keeps processOne decoupled from the map type.
+	lookupByHash := func(hash string) *storage.File { return knownByHash[hash] }
 
 	// Find new/modified files needing re-summarisation.
 	type job struct {
@@ -144,7 +157,7 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 
 			ix.emit(Event{Phase: "summarize", RelPath: j.entry.relPath, Index: idx + 1, Total: len(work)})
 
-			moved, err := ix.processOne(ctx, j.entry, j.known, knownByHash, force)
+			outcome, err := ix.processOne(ctx, j.entry, j.known, lookupByHash, force)
 			if err != nil {
 				mu.Lock()
 				res.Failed++
@@ -154,10 +167,10 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 				return
 			}
 			mu.Lock()
-			switch {
-			case moved:
+			switch outcome {
+			case outcomeMoved:
 				res.Moved++
-			case j.known == nil:
+			case outcomeAdded:
 				res.Added++
 			default:
 				res.Updated++
@@ -192,18 +205,24 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 }
 
 // processOne extracts, hashes, summarises, and upserts a single file.
-// It returns (true, nil) when the file was detected as a move/rename (same
-// content, different path) so the caller can count it separately.
-func (ix *Indexer) processOne(ctx context.Context, e diskEntry, known *storage.File, knownByHash map[string]*storage.File, force bool) (moved bool, err error) {
-	doc, docErr := ix.extract(e.absPath)
-	if docErr != nil {
-		return false, fmt.Errorf("extract: %w", docErr)
+// lookupByHash returns a prior DB record whose hash matches, enabling
+// move/rename detection without re-calling the LLM.
+func (ix *Indexer) processOne(
+	ctx context.Context,
+	e diskEntry,
+	known *storage.File,
+	lookupByHash func(hash string) *storage.File,
+	force bool,
+) (processOutcome, error) {
+	doc, err := ix.extract(e.absPath)
+	if err != nil {
+		return outcomeAdded, fmt.Errorf("extract: %w", err)
 	}
 
 	if !force {
-		// Same path, same hash → update mtime/title/content but skip LLM.
+		// Same path, same hash → only mtime/title/content may have drifted; skip LLM.
 		if known != nil && known.Hash == doc.Hash {
-			return false, ix.Store.Upsert(ctx, &storage.File{
+			return outcomeUpdated, ix.Store.Upsert(ctx, &storage.File{
 				ID:       known.ID,
 				RelPath:  e.relPath,
 				Hash:     doc.Hash,
@@ -216,11 +235,10 @@ func (ix *Indexer) processOne(ctx context.Context, e diskEntry, known *storage.F
 			})
 		}
 
-		// New path, but hash matches a record at a different path → move detected.
-		// Reuse the existing summary and keywords without an LLM call.
+		// New path, matching hash → move/rename detected; inherit summary.
 		if known == nil {
-			if prior, ok := knownByHash[doc.Hash]; ok && prior.RelPath != e.relPath {
-				return true, ix.Store.Upsert(ctx, &storage.File{
+			if prior := lookupByHash(doc.Hash); prior != nil && prior.RelPath != e.relPath {
+				return outcomeMoved, ix.Store.Upsert(ctx, &storage.File{
 					RelPath:  e.relPath,
 					Hash:     doc.Hash,
 					MTime:    e.mtime,
@@ -234,12 +252,17 @@ func (ix *Indexer) processOne(ctx context.Context, e diskEntry, known *storage.F
 		}
 	}
 
+	// New or genuinely changed file — call the LLM.
 	summary, keywords, err := Summarise(ctx, ix.LLM, doc.Title, doc.Content)
 	if err != nil {
-		return false, fmt.Errorf("summarise: %w", err)
+		return outcomeAdded, fmt.Errorf("summarise: %w", err)
 	}
 
-	return false, ix.Store.Upsert(ctx, &storage.File{
+	outcome := outcomeUpdated
+	if known == nil {
+		outcome = outcomeAdded
+	}
+	return outcome, ix.Store.Upsert(ctx, &storage.File{
 		RelPath:  e.relPath,
 		Hash:     doc.Hash,
 		MTime:    e.mtime,

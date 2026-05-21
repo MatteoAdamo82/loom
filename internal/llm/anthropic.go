@@ -1,15 +1,22 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
+)
+
+const (
+	anthropicDefaultVersion = "2023-06-01"
+	anthropicDefaultMaxTok  = 2048
+
+	// jsonNudge is appended to the system prompt when JSON mode is requested.
+	// Anthropic has no native json_mode flag, so we nudge via instructions.
+	jsonNudge = "\n\nReturn the response as a single, strict JSON object with no surrounding prose."
 )
 
 type AnthropicConfig struct {
@@ -21,8 +28,10 @@ type AnthropicConfig struct {
 }
 
 type AnthropicClient struct {
-	cfg AnthropicConfig
-	hc  *http.Client
+	cfg      AnthropicConfig
+	hc       *http.Client // regular calls (with Timeout)
+	streamHC *http.Client // streaming calls (no Timeout — ctx governs)
+	headers  map[string]string
 }
 
 func NewAnthropic(cfg AnthropicConfig) *AnthropicClient {
@@ -31,18 +40,19 @@ func NewAnthropic(cfg AnthropicConfig) *AnthropicClient {
 	}
 	cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
 	if cfg.Version == "" {
-		cfg.Version = "2023-06-01"
+		cfg.Version = anthropicDefaultVersion
 	}
-	if cfg.Timeout == 0 {
-		cfg.Timeout = 120 * time.Second
+	hc, streamHC := newHTTPClients(cfg.Timeout)
+	headers := map[string]string{"anthropic-version": cfg.Version}
+	if cfg.APIKey != "" {
+		headers["x-api-key"] = cfg.APIKey
 	}
-	return &AnthropicClient{
-		cfg: cfg,
-		hc:  &http.Client{Timeout: cfg.Timeout},
-	}
+	return &AnthropicClient{cfg: cfg, hc: hc, streamHC: streamHC, headers: headers}
 }
 
 func (c *AnthropicClient) Name() string { return "anthropic:" + c.cfg.Model }
+
+// --- wire types ---------------------------------------------------------------
 
 type anthropicMessageRequest struct {
 	Model       string             `json:"model"`
@@ -71,18 +81,32 @@ type anthropicMessageResponse struct {
 	} `json:"usage"`
 }
 
-const jsonNudge = "\n\nReturn the response as a single, strict JSON object with no surrounding prose."
+// anthropicStreamEvent is the union of SSE frame shapes. Unrecognised types
+// are tolerated as no-ops (ping, content_block_start, etc.).
+type anthropicStreamEvent struct {
+	Type    string `json:"type"`
+	Message struct {
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+	Delta struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"delta"`
+	Usage struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
 
-func (c *AnthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = c.cfg.Model
-	}
+// --- helpers ------------------------------------------------------------------
 
-	// Anthropic accepts a top-level system field, not a system role message.
-	var system string
-	var msgs []anthropicMessage
-	for _, m := range req.Messages {
+// convertMessages separates the Anthropic system field from user/assistant turns
+// and optionally appends the JSON nudge when JSON mode is requested.
+func (c *AnthropicClient) convertMessages(msgs []Message, wantJSON bool) (system string, turns []anthropicMessage) {
+	for _, m := range msgs {
 		if m.Role == RoleSystem {
 			if system != "" {
 				system += "\n\n"
@@ -90,60 +114,58 @@ func (c *AnthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 			system += m.Content
 			continue
 		}
-		msgs = append(msgs, anthropicMessage{Role: string(m.Role), Content: m.Content})
+		turns = append(turns, anthropicMessage{Role: string(m.Role), Content: m.Content})
 	}
-	if req.JSON {
-		// Anthropic doesn't have a JSON-mode flag; nudge via system prompt.
+	if wantJSON {
 		if system != "" {
 			system += jsonNudge
 		} else {
 			system = strings.TrimSpace(jsonNudge)
 		}
 	}
+	return
+}
 
-	// max_tokens is required by the API. Pick a sensible default.
+func (c *AnthropicClient) buildPayload(req ChatRequest, stream bool) ([]byte, error) {
+	model := req.Model
+	if model == "" {
+		model = c.cfg.Model
+	}
+	system, msgs := c.convertMessages(req.Messages, req.JSON)
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 2048
+		maxTokens = anthropicDefaultMaxTok
 	}
-
-	payload := anthropicMessageRequest{
+	p := anthropicMessageRequest{
 		Model:     model,
 		System:    system,
 		Messages:  msgs,
 		MaxTokens: maxTokens,
+		Stream:    stream,
 	}
 	if req.Temperature > 0 {
 		t := req.Temperature
-		payload.Temperature = &t
+		p.Temperature = &t
 	}
-
-	body, err := json.Marshal(payload)
+	b, err := json.Marshal(p)
 	if err != nil {
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
 	}
+	return b, nil
+}
 
-	url := c.cfg.Endpoint + "/v1/messages"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+// --- Client interface ---------------------------------------------------------
+
+func (c *AnthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	body, err := c.buildPayload(req, false)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("anthropic-version", c.cfg.Version)
-	if c.cfg.APIKey != "" {
-		httpReq.Header.Set("x-api-key", c.cfg.APIKey)
-	}
-
-	resp, err := c.hc.Do(httpReq)
+	resp, err := postJSON(ctx, c.hc, c.cfg.Endpoint+"/v1/messages", c.headers, body)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic http: %w", err)
+		return nil, fmt.Errorf("anthropic: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic status %d: %s", resp.StatusCode, bytes.TrimSpace(b))
-	}
 
 	var out anthropicMessageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -152,8 +174,6 @@ func (c *AnthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 	if len(out.Content) == 0 {
 		return nil, fmt.Errorf("anthropic returned no content blocks")
 	}
-
-	// Concatenate text blocks; ignore non-text blocks (tool_use, etc.) for MVP.
 	var sb strings.Builder
 	for _, blk := range out.Content {
 		if blk.Type == "text" {
@@ -168,113 +188,30 @@ func (c *AnthropicClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 	}, nil
 }
 
-// anthropicStreamEvent is the union of frame shapes Anthropic sends. We only
-// care about a few fields; ignored frames (e.g. ping, content_block_start)
-// are tolerated as no-ops.
-type anthropicStreamEvent struct {
-	Type    string `json:"type"`
-	Index   int    `json:"index"`
-	Message struct {
-		Model string `json:"model"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	} `json:"message"`
-	Delta struct {
-		Type         string `json:"type"`
-		Text         string `json:"text"`
-		StopReason   string `json:"stop_reason"`
-	} `json:"delta"`
-	Usage struct {
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
-}
-
-// Stream emits successive text deltas from Anthropic's SSE protocol. We watch
-// `content_block_delta` frames whose `delta.type == "text_delta"`.
+// Stream emits successive text deltas from Anthropic's SSE protocol.
+// Only `content_block_delta` frames with `delta.type == "text_delta"` carry
+// visible content; all other event types are either metadata or no-ops.
 func (c *AnthropicClient) Stream(ctx context.Context, req ChatRequest, onChunk func(string)) (*ChatResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = c.cfg.Model
-	}
-
-	var system string
-	var msgs []anthropicMessage
-	for _, m := range req.Messages {
-		if m.Role == RoleSystem {
-			if system != "" {
-				system += "\n\n"
-			}
-			system += m.Content
-			continue
-		}
-		msgs = append(msgs, anthropicMessage{Role: string(m.Role), Content: m.Content})
-	}
-	if req.JSON {
-		if system != "" {
-			system += jsonNudge
-		} else {
-			system = strings.TrimSpace(jsonNudge)
-		}
-	}
-
-	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 2048
-	}
-
-	payload := anthropicMessageRequest{
-		Model:     model,
-		System:    system,
-		Messages:  msgs,
-		MaxTokens: maxTokens,
-		Stream:    true,
-	}
-	if req.Temperature > 0 {
-		t := req.Temperature
-		payload.Temperature = &t
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal anthropic request: %w", err)
-	}
-
-	url := c.cfg.Endpoint + "/v1/messages"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	body, err := c.buildPayload(req, true)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("anthropic-version", c.cfg.Version)
-	if c.cfg.APIKey != "" {
-		httpReq.Header.Set("x-api-key", c.cfg.APIKey)
+	hdrs := make(map[string]string, len(c.headers)+1)
+	for k, v := range c.headers {
+		hdrs[k] = v
 	}
+	hdrs["Accept"] = "text/event-stream"
 
-	streamHC := &http.Client{}
-	resp, err := streamHC.Do(httpReq)
+	resp, err := postJSON(ctx, c.streamHC, c.cfg.Endpoint+"/v1/messages", hdrs, body)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic http: %w", err)
+		return nil, fmt.Errorf("anthropic: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("anthropic status %d: %s", resp.StatusCode, bytes.TrimSpace(b))
-	}
-
-	var (
-		full         strings.Builder
-		lastModel    string
-		promptTokens int
-		evalTokens   int
-	)
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	var acc streamAccumulator
+	sc := newStreamScanner(resp.Body)
+	for sc.Scan() {
+		line := sc.Bytes()
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
@@ -288,31 +225,21 @@ func (c *AnthropicClient) Stream(ctx context.Context, req ChatRequest, onChunk f
 		}
 		switch ev.Type {
 		case "message_start":
-			lastModel = ev.Message.Model
-			promptTokens = ev.Message.Usage.InputTokens
+			acc.append("", ev.Message.Model)
+			acc.setTokens(ev.Message.Usage.InputTokens, 0)
 		case "content_block_delta":
 			if ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
-				full.WriteString(ev.Delta.Text)
+				acc.append(ev.Delta.Text, "")
 				if onChunk != nil {
 					onChunk(ev.Delta.Text)
 				}
 			}
 		case "message_delta":
-			if ev.Usage.OutputTokens > 0 {
-				evalTokens = ev.Usage.OutputTokens
-			}
-		case "message_stop":
-			// Will return after scanner exits.
+			acc.setTokens(0, ev.Usage.OutputTokens)
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("read anthropic stream: %w", err)
 	}
-
-	return &ChatResponse{
-		Content:      full.String(),
-		Model:        lastModel,
-		PromptTokens: promptTokens,
-		OutputTokens: evalTokens,
-	}, nil
+	return acc.result(), nil
 }
