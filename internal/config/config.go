@@ -7,9 +7,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/BurntSushi/toml"
 )
@@ -48,7 +50,8 @@ func DefaultPath() string {
 	return filepath.Join(home, ".loom", "config.toml")
 }
 
-// Save writes cfg to path as TOML, creating the parent directory if needed.
+// Save writes cfg to path as a commented TOML template that shows all
+// supported LLM providers as ready-to-use copy-paste examples.
 func Save(cfg *Config, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("ensure config dir: %w", err)
@@ -58,7 +61,48 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("create config: %w", err)
 	}
 	defer f.Close()
-	return toml.NewEncoder(f).Encode(cfg)
+	return writeTemplate(cfg, f)
+}
+
+// configTemplate is the annotated template written by loom init.
+// It keeps the active provider uncommented and shows the others as examples.
+var configTemplate = template.Must(template.New("config").Parse(`# Loom configuration — edit this file to change provider, model, or folder paths.
+# Run "loom scan" after any change.
+
+notes_dir = "{{.NotesDir}}"
+db_path   = "{{.DBPath}}"
+
+# ── LLM provider ─────────────────────────────────────────────────────────────
+# Uncomment the block for the provider you want to use.
+# Only one [llm] block should be active at a time.
+#
+# api_key_env is the NAME of an environment variable holding your API key.
+# The key itself is never written to disk.
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   export OPENAI_API_KEY=sk-...
+
+# Option 1 — Ollama (local, no API key required)
+[llm]
+provider    = "ollama"
+model       = "llama3.1:8b"
+endpoint    = "http://localhost:11434"
+api_key_env = ""
+
+# Option 2 — Anthropic Claude
+# [llm]
+# provider    = "anthropic"
+# model       = "claude-sonnet-4-5"
+# api_key_env = "ANTHROPIC_API_KEY"
+
+# Option 3 — OpenAI
+# [llm]
+# provider    = "openai"
+# model       = "gpt-4o"
+# api_key_env = "OPENAI_API_KEY"
+`))
+
+func writeTemplate(cfg *Config, w io.Writer) error {
+	return configTemplate.Execute(w, cfg)
 }
 
 // Load reads config from path, merging values over Default(). A missing file

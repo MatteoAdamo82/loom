@@ -72,29 +72,43 @@ loom ask "cosa ho scritto sul progetto X?"
 
 ## Configuration
 
-`~/.loom/config.toml`:
+`~/.loom/config.toml` is created by `loom init` with all three provider options as ready-to-use commented blocks.
+
+| Provider | `provider` | Model example | `api_key_env` |
+|---|---|---|---|
+| Ollama (local) | `ollama` | `llama3.1:8b` | — |
+| Anthropic | `anthropic` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | `gpt-4o` | `OPENAI_API_KEY` |
+
+> **`api_key_env` is the name of an environment variable**, not the key itself — the key is never written to disk. Set it in your shell before running Loom:
+> ```bash
+> export ANTHROPIC_API_KEY=sk-ant-...
+> ```
+
+To switch provider, open `~/.loom/config.toml`, uncomment the block you want and comment out the others:
 
 ```toml
-notes_dir = "~/loom"
-db_path   = "~/.loom/index.db"
-
+# Ollama (local, default)
 [llm]
-provider    = "ollama"           # "ollama" | "openai" | "anthropic"
+provider    = "ollama"
 model       = "llama3.1:8b"
 endpoint    = "http://localhost:11434"
-api_key_env = ""                 # e.g. "OPENAI_API_KEY"
+api_key_env = ""
+
+# Anthropic Claude
+# [llm]
+# provider    = "anthropic"
+# model       = "claude-sonnet-4-5"
+# api_key_env = "ANTHROPIC_API_KEY"
+
+# OpenAI
+# [llm]
+# provider    = "openai"
+# model       = "gpt-4o"
+# api_key_env = "OPENAI_API_KEY"
 ```
 
-Cloud providers:
-
-```toml
-[llm]
-provider    = "anthropic"
-model       = "claude-sonnet-4-6"
-api_key_env = "ANTHROPIC_API_KEY"
-```
-
-Loom never stores the API key on disk — only the env var name.
+The `endpoint` field is optional for cloud providers (defaults are built in). For Ollama it defaults to `http://localhost:11434`.
 
 ## Organising your folder
 
