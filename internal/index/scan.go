@@ -57,7 +57,7 @@ type Event struct {
 
 // Indexer is the entry point. Construct with New() and call Scan() / Force().
 type Indexer struct {
-	NotesDir   string
+	NotesDirs  []string
 	Store      *storage.Store
 	LLM        llm.Client
 	Registry   *extract.Registry
@@ -65,9 +65,11 @@ type Indexer struct {
 	OnEvent    func(Event)
 }
 
-func New(notesDir string, store *storage.Store, lc llm.Client) *Indexer {
+// New creates an Indexer for one or more notes directories.
+// Pass a single-element slice for the common case of one folder.
+func New(notesDirs []string, store *storage.Store, lc llm.Client) *Indexer {
 	return &Indexer{
-		NotesDir:   notesDir,
+		NotesDirs:  notesDirs,
 		Store:      store,
 		LLM:        lc,
 		Registry:   extract.DefaultRegistry(),
@@ -90,8 +92,10 @@ func (ix *Indexer) scan(ctx context.Context, force bool) (*Result, error) {
 	started := time.Now()
 	res := &Result{}
 
-	if err := os.MkdirAll(ix.NotesDir, 0o755); err != nil {
-		return nil, fmt.Errorf("ensure notes dir: %w", err)
+	for _, d := range ix.NotesDirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, fmt.Errorf("ensure notes dir %s: %w", d, err)
+		}
 	}
 
 	disk, err := ix.walk()
@@ -328,41 +332,77 @@ var supportedExts = map[string]bool{
 }
 
 func (ix *Indexer) walk() ([]diskEntry, error) {
-	var out []diskEntry
-	err := filepath.WalkDir(ix.NotesDir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	// When scanning more than one root directory, prefix every relPath with
+	// the basename of its root so paths stay unique in the DB.
+	// Example: root "/home/user/work"  → relPath "work/a.md"
+	//          root "/home/user/notes" → relPath "notes/b.md"
+	// With a single directory the prefix is omitted (backward-compatible).
+	usePrefix := len(ix.NotesDirs) > 1
+
+	// Build a deduplicated prefix per root. If two roots share the same
+	// basename (e.g. "/a/notes" and "/b/notes"), append a numeric suffix.
+	prefixFor := make(map[string]string, len(ix.NotesDirs))
+	baseCounts := map[string]int{}
+	for _, root := range ix.NotesDirs {
+		base := filepath.Base(root)
+		baseCounts[base]++
+	}
+	baseUsed := map[string]int{}
+	for _, root := range ix.NotesDirs {
+		base := filepath.Base(root)
+		if baseCounts[base] == 1 {
+			prefixFor[root] = base
+		} else {
+			baseUsed[base]++
+			prefixFor[root] = fmt.Sprintf("%s_%d", base, baseUsed[base])
 		}
-		if d.IsDir() {
-			// Skip hidden dirs (.git, .obsidian, etc.) but allow the root.
-			if p == ix.NotesDir {
+	}
+
+	var out []diskEntry
+	for _, root := range ix.NotesDirs {
+		prefix := prefixFor[root]
+		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				// Skip hidden dirs (.git, .obsidian, etc.) but allow the root.
+				if p == root {
+					return nil
+				}
+				if strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			if strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
+				return nil
 			}
+			if !supportedExts[strings.ToLower(filepath.Ext(p))] {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(root, p)
+			if err != nil {
+				return err
+			}
+			relSlash := filepath.ToSlash(rel)
+			if usePrefix {
+				relSlash = prefix + "/" + relSlash
+			}
+			out = append(out, diskEntry{
+				relPath: relSlash,
+				absPath: p,
+				mtime:   info.ModTime().Unix(),
+			})
 			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		if !supportedExts[strings.ToLower(filepath.Ext(p))] {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(ix.NotesDir, p)
-		if err != nil {
-			return err
-		}
-		out = append(out, diskEntry{
-			relPath: filepath.ToSlash(rel),
-			absPath: p,
-			mtime:   info.ModTime().Unix(),
 		})
-		return nil
-	})
-	return out, err
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }

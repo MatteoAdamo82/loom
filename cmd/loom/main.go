@@ -103,13 +103,22 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.NotesDir, 0o755); err != nil {
-		return fmt.Errorf("create notes dir: %w", err)
+	for _, d := range cfg.NotesDirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("create notes dir: %w", err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
 	}
-	fmt.Printf("notes folder: %s\n", cfg.NotesDir)
+	if len(cfg.NotesDirs) == 1 {
+		fmt.Printf("notes folder: %s\n", cfg.NotesDirs[0])
+	} else {
+		fmt.Println("notes folders:")
+		for _, d := range cfg.NotesDirs {
+			fmt.Printf("  - %s\n", d)
+		}
+	}
 	fmt.Printf("index db:     %s\n", cfg.DBPath)
 	fmt.Println("\ndrop your files (md, pdf, html, txt) into the notes folder, then run `loom scan`.")
 	return nil
@@ -134,7 +143,7 @@ func cmdScan(args []string) error {
 	}
 	defer rt.store.Close()
 
-	ix := index.New(rt.cfg.NotesDir, rt.store, rt.llm)
+	ix := index.New(rt.cfg.NotesDirs, rt.store, rt.llm)
 	ix.OnEvent = func(e index.Event) {
 		switch e.Phase {
 		case "summarize":
@@ -226,8 +235,10 @@ func bootstrap(cfgPath string) (*runtime, error) {
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(cfg.NotesDir, 0o755); err != nil {
-		return nil, err
+	for _, d := range cfg.NotesDirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, err
+		}
 	}
 	store, err := storage.Open(cfg.DBPath)
 	if err != nil {

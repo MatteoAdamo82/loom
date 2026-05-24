@@ -3,7 +3,7 @@
 export type Status = {
   ok: boolean;
   error?: string;
-  notes_dir?: string;
+  notes_dirs?: string[];
   db_path?: string;
   llm_name?: string;
   config_path?: string;
@@ -50,7 +50,7 @@ export type ScanProgress = {
 };
 
 export type Settings = {
-  NotesDir: string;
+  NotesDirs: string[];
   DBPath: string;
   LLM: {
     Provider: string;

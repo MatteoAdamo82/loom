@@ -48,8 +48,10 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		fatal("ensure db dir: %v", err)
 	}
-	if err := os.MkdirAll(cfg.NotesDir, 0o755); err != nil {
-		fatal("ensure notes dir: %v", err)
+	for _, d := range cfg.NotesDirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			fatal("ensure notes dir %s: %v", d, err)
+		}
 	}
 	store, err := storage.Open(cfg.DBPath)
 	if err != nil {
@@ -145,7 +147,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			force := req.GetBool("force", false)
-			ix := index.New(cfg.NotesDir, store, client)
+			ix := index.New(cfg.NotesDirs, store, client)
 			var (
 				res *index.Result
 				err error

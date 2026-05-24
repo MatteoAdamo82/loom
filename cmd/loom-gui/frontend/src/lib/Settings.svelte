@@ -59,11 +59,25 @@
       <p class="dim">caricamento…</p>
     {:else}
       <div class="form">
-        <label>
-          <span>Notes folder</span>
-          <input type="text" bind:value={cfg.NotesDir} />
-          <small>Cartella dove Loom legge i tuoi file. Trascinaci dentro md/pdf/html/txt.</small>
-        </label>
+        <div class="dirs-field">
+          <span class="dirs-label">Notes folders</span>
+          {#each cfg.NotesDirs as dir, i}
+            <div class="dir-row">
+              <input type="text" bind:value={cfg.NotesDirs[i]} placeholder="/percorso/alla/cartella" />
+              <button
+                type="button"
+                class="dir-remove"
+                aria-label="Rimuovi cartella"
+                disabled={cfg.NotesDirs.length <= 1}
+                on:click={() => { cfg.NotesDirs = cfg.NotesDirs.filter((_, j) => j !== i); }}
+              >×</button>
+            </div>
+          {/each}
+          <button type="button" class="dir-add" on:click={() => { cfg.NotesDirs = [...cfg.NotesDirs, ""]; }}>
+            + Aggiungi cartella
+          </button>
+          <small>Loom scansiona tutte le cartelle elencate. Aggiungi path già esistenti sul tuo PC.</small>
+        </div>
 
         <label>
           <span>Index database</span>
@@ -216,6 +230,51 @@
     letter-spacing: 0.06em;
     padding: 0 0.4rem;
   }
+
+  /* multi-dir editor */
+  .dirs-field {
+    margin-bottom: 1rem;
+  }
+  .dirs-label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+    font-weight: 500;
+  }
+  .dir-row {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+  }
+  .dir-row input {
+    flex: 1;
+  }
+  .dir-remove {
+    flex-shrink: 0;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: white;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+  }
+  .dir-remove:hover:not([disabled]) { border-color: #c0392b; color: #c0392b; }
+  .dir-remove[disabled] { opacity: 0.3; cursor: not-allowed; }
+  .dir-add {
+    margin-top: 0.2rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85rem;
+  }
+  .dir-add:hover { border-color: var(--accent); color: var(--accent); }
 
   .error {
     margin: 0 1.25rem 1rem;

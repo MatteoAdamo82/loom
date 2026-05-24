@@ -18,7 +18,7 @@ func TestDefaultReturnsExpectedFields(t *testing.T) {
 	if cfg.LLM.Endpoint == "" {
 		t.Error("expected non-empty default endpoint")
 	}
-	if cfg.NotesDir == "" || cfg.DBPath == "" {
+	if len(cfg.NotesDirs) == 0 || cfg.DBPath == "" {
 		t.Error("expected non-empty default paths")
 	}
 }
@@ -51,12 +51,33 @@ func TestSaveWritesAllThreeProviderBlocks(t *testing.T) {
 	}
 }
 
+func TestSaveWritesNotesDirsArray(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := Default()
+	cfg.NotesDirs = []string{"/tmp/a", "/tmp/b"}
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	b, _ := os.ReadFile(path)
+	content := string(b)
+
+	if !strings.Contains(content, `notes_dirs`) {
+		t.Error("expected notes_dirs key in generated config")
+	}
+	if !strings.Contains(content, `/tmp/a`) || !strings.Contains(content, `/tmp/b`) {
+		t.Errorf("both paths should appear in config: %s", content)
+	}
+}
+
 func TestLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
 	orig := Default()
-	orig.NotesDir = filepath.Join(dir, "notes")
+	orig.NotesDirs = []string{filepath.Join(dir, "notes")}
 	orig.DBPath = filepath.Join(dir, "index.db")
 	orig.LLM.Provider = "openai"
 	orig.LLM.Model = "gpt-4o"
@@ -80,8 +101,60 @@ func TestLoadRoundTrip(t *testing.T) {
 	if loaded.LLM.APIKeyEnv != "OPENAI_API_KEY" {
 		t.Errorf("api_key_env: want 'OPENAI_API_KEY', got %q", loaded.LLM.APIKeyEnv)
 	}
-	if loaded.NotesDir != orig.NotesDir {
-		t.Errorf("notes_dir: want %q, got %q", orig.NotesDir, loaded.NotesDir)
+	if len(loaded.NotesDirs) != 1 || loaded.NotesDirs[0] != orig.NotesDirs[0] {
+		t.Errorf("notes_dirs: want %v, got %v", orig.NotesDirs, loaded.NotesDirs)
+	}
+}
+
+func TestLoadLegacyNotesDirMigratedToSlice(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Write a legacy config that uses the old notes_dir (singular) key.
+	legacy := `notes_dir = "/tmp/legacy"
+db_path   = "/tmp/index.db"
+[llm]
+provider = "ollama"
+model    = "llama3.1:8b"
+endpoint = "http://localhost:11434"
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.NotesDirs) != 1 || cfg.NotesDirs[0] != "/tmp/legacy" {
+		t.Errorf("legacy notes_dir not migrated: got %v", cfg.NotesDirs)
+	}
+}
+
+func TestLoadMultipleDirs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	content := `notes_dirs = ["/tmp/work", "/tmp/personal"]
+db_path = "/tmp/index.db"
+[llm]
+provider = "ollama"
+model    = "llama3.1:8b"
+endpoint = "http://localhost:11434"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.NotesDirs) != 2 {
+		t.Fatalf("expected 2 dirs, got %v", cfg.NotesDirs)
+	}
+	if cfg.NotesDirs[0] != "/tmp/work" || cfg.NotesDirs[1] != "/tmp/personal" {
+		t.Errorf("unexpected dirs: %v", cfg.NotesDirs)
 	}
 }
 

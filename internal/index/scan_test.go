@@ -70,7 +70,7 @@ func TestScanIndexesNewFiles(t *testing.T) {
 	writeNote(t, notesDir, "a.md", "# A\nhello world")
 	writeNote(t, notesDir, "b.md", "# B\nciao mondo")
 
-	ix := New(notesDir, store, lc)
+	ix := New([]string{notesDir}, store, lc)
 	res, err := ix.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -92,7 +92,7 @@ func TestScanSkipsUnchangedFiles(t *testing.T) {
 	notesDir, store, lc := setupNotes(t)
 	writeNote(t, notesDir, "a.md", "# A\nhello")
 
-	ix := New(notesDir, store, lc)
+	ix := New([]string{notesDir}, store, lc)
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestScanRemovesMissingFiles(t *testing.T) {
 	writeNote(t, notesDir, "a.md", "# A")
 	writeNote(t, notesDir, "b.md", "# B")
 
-	ix := New(notesDir, store, lc)
+	ix := New([]string{notesDir}, store, lc)
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestScanReProcessesModifiedFiles(t *testing.T) {
 	notesDir, store, lc := setupNotes(t)
 	writeNote(t, notesDir, "a.md", "first")
 
-	ix := New(notesDir, store, lc)
+	ix := New([]string{notesDir}, store, lc)
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestScanSkipsHiddenAndUnsupported(t *testing.T) {
 	}
 	writeNote(t, filepath.Join(notesDir, ".obsidian"), "config.md", "should not be scanned")
 
-	ix := New(notesDir, store, lc)
+	ix := New([]string{notesDir}, store, lc)
 	res, err := ix.Scan(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestScanReusesSummaryOnMove(t *testing.T) {
 	notesDir, store, lc := setupNotes(t)
 	writeNote(t, notesDir, "original.md", "# Content\nhello world")
 
-	ix := New(notesDir, store, lc)
+	ix := New([]string{notesDir}, store, lc)
 	if _, err := ix.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestScanRecoversFromUnparseableLLM(t *testing.T) {
 	writeNote(t, notesDir, "a.md", "# A")
 
 	lc := &stubLLM{respond: func(string) string { return "this is not JSON" }}
-	ix := New(notesDir, store, lc)
+	ix := New([]string{notesDir}, store, lc)
 
 	res, err := ix.Scan(context.Background())
 	if err != nil {
@@ -230,5 +230,108 @@ func TestScanRecoversFromUnparseableLLM(t *testing.T) {
 	}
 	if res.Added != 1 || res.Failed != 0 {
 		t.Errorf("expected fallback summary to keep us going, got %+v", res)
+	}
+}
+
+func TestScanMultipleDirs(t *testing.T) {
+	tmp := t.TempDir()
+	dirA := filepath.Join(tmp, "work")
+	dirB := filepath.Join(tmp, "personal")
+	if err := os.MkdirAll(dirA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeNote(t, dirA, "alpha.md", "# Alpha\nhello from work")
+	writeNote(t, dirB, "beta.md", "# Beta\nhello from personal")
+
+	store, err := storage.Open(filepath.Join(tmp, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	lc := &stubLLM{}
+	ix := New([]string{dirA, dirB}, store, lc)
+	res, err := ix.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if res.Added != 2 {
+		t.Errorf("expected 2 added, got %+v", res)
+	}
+
+	files, _ := store.List(context.Background())
+	if len(files) != 2 {
+		t.Fatalf("expected 2 rows in DB, got %d", len(files))
+	}
+
+	// Both relPaths must carry the dir basename as prefix.
+	paths := map[string]bool{}
+	for _, f := range files {
+		paths[f.RelPath] = true
+	}
+	if !paths["work/alpha.md"] {
+		t.Errorf("expected relPath 'work/alpha.md', got paths: %v", paths)
+	}
+	if !paths["personal/beta.md"] {
+		t.Errorf("expected relPath 'personal/beta.md', got paths: %v", paths)
+	}
+
+	// Second scan with same content → 0 LLM calls, 2 skipped.
+	callsBefore := lc.callCount()
+	res2, err := ix.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.callCount() != callsBefore {
+		t.Errorf("second scan should skip all files, got extra LLM calls")
+	}
+	if res2.Skipped != 2 {
+		t.Errorf("expected 2 skipped on second scan, got %+v", res2)
+	}
+}
+
+func TestScanMultipleDirsDeleteReconciliation(t *testing.T) {
+	tmp := t.TempDir()
+	dirA := filepath.Join(tmp, "work")
+	dirB := filepath.Join(tmp, "personal")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeNote(t, dirA, "a.md", "A")
+	writeNote(t, dirB, "b.md", "B")
+
+	store, err := storage.Open(filepath.Join(tmp, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	lc := &stubLLM{}
+	ix := New([]string{dirA, dirB}, store, lc)
+	if _, err := ix.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove b.md and re-scan → personal/b.md must disappear from index.
+	if err := os.Remove(filepath.Join(dirB, "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ix.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Removed != 1 {
+		t.Errorf("expected 1 removed, got %+v", res)
+	}
+
+	files, _ := store.List(context.Background())
+	if len(files) != 1 || files[0].RelPath != "work/a.md" {
+		t.Errorf("expected only work/a.md, got %+v", files)
 	}
 }

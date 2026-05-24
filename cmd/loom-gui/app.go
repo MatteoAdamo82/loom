@@ -69,9 +69,11 @@ func (a *App) bootstrap() {
 		a.loadErr = fmt.Sprintf("ensure db dir: %v", err)
 		return
 	}
-	if err := os.MkdirAll(cfg.NotesDir, 0o755); err != nil {
-		a.loadErr = fmt.Sprintf("ensure notes dir: %v", err)
-		return
+	for _, d := range cfg.NotesDirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			a.loadErr = fmt.Sprintf("ensure notes dir %s: %v", d, err)
+			return
+		}
 	}
 	store, err := storage.Open(cfg.DBPath)
 	if err != nil {
@@ -96,13 +98,13 @@ func (a *App) bootstrap() {
 // ---------------------------------------------------------------------------
 
 type StatusVM struct {
-	OK         bool   `json:"ok"`
-	Error      string `json:"error,omitempty"`
-	NotesDir   string `json:"notes_dir,omitempty"`
-	DBPath     string `json:"db_path,omitempty"`
-	LLMName    string `json:"llm_name,omitempty"`
-	ConfigPath string `json:"config_path,omitempty"`
-	FileCount  int    `json:"file_count"`
+	OK         bool     `json:"ok"`
+	Error      string   `json:"error,omitempty"`
+	NotesDirs  []string `json:"notes_dirs,omitempty"`
+	DBPath     string   `json:"db_path,omitempty"`
+	LLMName    string   `json:"llm_name,omitempty"`
+	ConfigPath string   `json:"config_path,omitempty"`
+	FileCount  int      `json:"file_count"`
 }
 
 type FileVM struct {
@@ -152,7 +154,7 @@ func (a *App) Status() StatusVM {
 		return vm
 	}
 	vm.OK = true
-	vm.NotesDir = a.cfg.NotesDir
+	vm.NotesDirs = a.cfg.NotesDirs
 	vm.DBPath = a.cfg.DBPath
 	vm.LLMName = a.llmName
 	vm.FileCount = count
@@ -239,7 +241,7 @@ func (a *App) Rescan(force bool) ScanResultVM {
 	a.scanCancel = cancel
 	defer func() { a.scanCancel = nil }()
 
-	ix := index.New(cfg.NotesDir, store, lc)
+	ix := index.New(cfg.NotesDirs, store, lc)
 	ix.OnEvent = func(e index.Event) {
 		wailsruntime.EventsEmit(a.ctx, "scan:progress", map[string]any{
 			"phase":    e.Phase,
@@ -314,18 +316,20 @@ func (a *App) Ask(question string) AskResultVM {
 	}
 }
 
-// OpenNotesDir asks the host OS to open the configured notes folder.
+// OpenNotesDir asks the host OS to open the first configured notes folder.
+// When multiple folders are configured it opens only the first one; the user
+// can navigate to the others from their file manager.
 func (a *App) OpenNotesDir() error {
 	a.mu.RLock()
-	dir := ""
+	var dirs []string
 	if a.cfg != nil {
-		dir = a.cfg.NotesDir
+		dirs = a.cfg.NotesDirs
 	}
 	a.mu.RUnlock()
-	if dir == "" {
+	if len(dirs) == 0 {
 		return fmt.Errorf("notes dir not configured")
 	}
-	wailsruntime.BrowserOpenURL(a.ctx, "file://"+dir)
+	wailsruntime.BrowserOpenURL(a.ctx, "file://"+dirs[0])
 	return nil
 }
 
