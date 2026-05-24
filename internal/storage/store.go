@@ -43,8 +43,6 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) DB() *sql.DB { return s.db }
-
 // Upsert writes (or replaces) the row keyed by RelPath. The triggers on
 // `files` keep the FTS index in sync.
 func (s *Store) Upsert(ctx context.Context, f *File) error {

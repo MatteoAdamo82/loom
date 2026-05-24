@@ -1,5 +1,5 @@
 // Package config loads Loom's user configuration from ~/.loom/config.toml.
-// Five fields cover everything: where the notes folder lives, which LLM to
+// Six fields cover everything: where the notes folder(s) live, which LLM to
 // use (provider/model/endpoint), and an env var name holding the API key for
 // cloud providers.
 package config
@@ -16,9 +16,9 @@ import (
 )
 
 type Config struct {
-	NotesDir string    `toml:"notes_dir"`
-	DBPath   string    `toml:"db_path"`
-	LLM      LLMConfig `toml:"llm"`
+	NotesDirs []string  `toml:"notes_dirs"`
+	DBPath    string    `toml:"db_path"`
+	LLM       LLMConfig `toml:"llm"`
 
 	loadedFrom string
 }
@@ -33,8 +33,8 @@ type LLMConfig struct {
 func Default() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		NotesDir: filepath.Join(home, "loom"),
-		DBPath:   filepath.Join(home, ".loom", "index.db"),
+		NotesDirs: []string{filepath.Join(home, "loom")},
+		DBPath:    filepath.Join(home, ".loom", "index.db"),
 		LLM: LLMConfig{
 			Provider: "ollama",
 			Model:    "llama3.1:8b",
@@ -66,99 +66,84 @@ func Save(cfg *Config, path string) error {
 // writeTemplate writes an annotated config to w. The provider block matching
 // cfg.LLM.Provider is left uncommented; the other two are shown as examples.
 func writeTemplate(cfg *Config, w io.Writer) error {
-	type providerBlock struct {
-		name    string
-		label   string
-		lines   []string
-		example []string // fallback example when not active
-	}
-
-	// Determine active values, falling back to defaults for each provider.
 	active := cfg.LLM.Provider
 	if active == "" {
 		active = "ollama"
 	}
 
-	// comment prefixes each line with "# ".
-	comment := func(lines []string) []string {
-		out := make([]string, len(lines))
-		for i, l := range lines {
-			if l == "" {
-				out[i] = "#"
-			} else {
-				out[i] = "# " + l
-			}
+	// pick returns val when it is non-empty and the active provider matches p;
+	// otherwise it returns def. This selects the user's real value for the
+	// active block and a sensible default for the commented-out examples.
+	pick := func(p, val, def string) string {
+		if val != "" && active == p {
+			return val
 		}
-		return out
+		return def
 	}
 
-	// active block lines (use cfg values when provider matches).
-	ollamaLines := func() []string {
-		model := cfg.LLM.Model
-		if model == "" || cfg.LLM.Provider != "ollama" {
-			model = "llama3.1:8b"
-		}
-		ep := cfg.LLM.Endpoint
-		if ep == "" || cfg.LLM.Provider != "ollama" {
-			ep = "http://localhost:11434"
-		}
-		return []string{
-			`[llm]`,
-			`provider    = "ollama"`,
-			`model       = "` + model + `"`,
-			`endpoint    = "` + ep + `"`,
-			`api_key_env = ""`,
-		}
+	// Format notes_dirs as a TOML inline array.
+	dirs := cfg.NotesDirs
+	if len(dirs) == 0 {
+		home, _ := os.UserHomeDir()
+		dirs = []string{filepath.Join(home, "loom")}
 	}
-	anthropicLines := func() []string {
-		model := cfg.LLM.Model
-		if model == "" || cfg.LLM.Provider != "anthropic" {
-			model = "claude-sonnet-4-5"
+	var sb strings.Builder
+	sb.WriteString("[")
+	for i, d := range dirs {
+		if i > 0 {
+			sb.WriteString(", ")
 		}
-		keyEnv := cfg.LLM.APIKeyEnv
-		if keyEnv == "" || cfg.LLM.Provider != "anthropic" {
-			keyEnv = "ANTHROPIC_API_KEY"
-		}
-		return []string{
-			`[llm]`,
-			`provider    = "anthropic"`,
-			`model       = "` + model + `"`,
-			`api_key_env = "` + keyEnv + `"`,
-		}
+		fmt.Fprintf(&sb, "%q", d)
 	}
-	openaiLines := func() []string {
-		model := cfg.LLM.Model
-		if model == "" || cfg.LLM.Provider != "openai" {
-			model = "gpt-4o"
-		}
-		keyEnv := cfg.LLM.APIKeyEnv
-		if keyEnv == "" || cfg.LLM.Provider != "openai" {
-			keyEnv = "OPENAI_API_KEY"
-		}
-		return []string{
-			`[llm]`,
-			`provider    = "openai"`,
-			`model       = "` + model + `"`,
-			`api_key_env = "` + keyEnv + `"`,
-		}
-	}
+	sb.WriteString("]")
+	notesDirsToml := sb.String()
 
-	type block struct {
+	type providerBlock struct {
 		label  string
-		lines  []string
 		active bool
+		lines  []string
 	}
-	blocks := []block{
-		{"Option 1 — Ollama (local, no API key required)", ollamaLines(), active == "ollama" || active == ""},
-		{"Option 2 — Anthropic Claude", anthropicLines(), active == "anthropic"},
-		{"Option 3 — OpenAI", openaiLines(), active == "openai"},
+	blocks := []providerBlock{
+		{
+			label:  "Option 1 — Ollama (local, no API key required)",
+			active: active == "ollama",
+			lines: []string{
+				`[llm]`,
+				`provider    = "ollama"`,
+				fmt.Sprintf(`model       = %q`, pick("ollama", cfg.LLM.Model, "llama3.1:8b")),
+				fmt.Sprintf(`endpoint    = %q`, pick("ollama", cfg.LLM.Endpoint, "http://localhost:11434")),
+				`api_key_env = ""`,
+			},
+		},
+		{
+			label:  "Option 2 — Anthropic Claude",
+			active: active == "anthropic",
+			lines: []string{
+				`[llm]`,
+				`provider    = "anthropic"`,
+				fmt.Sprintf(`model       = %q`, pick("anthropic", cfg.LLM.Model, "claude-sonnet-4-5")),
+				fmt.Sprintf(`api_key_env = %q`, pick("anthropic", cfg.LLM.APIKeyEnv, "ANTHROPIC_API_KEY")),
+			},
+		},
+		{
+			label:  "Option 3 — OpenAI",
+			active: active == "openai",
+			lines: []string{
+				`[llm]`,
+				`provider    = "openai"`,
+				fmt.Sprintf(`model       = %q`, pick("openai", cfg.LLM.Model, "gpt-4o")),
+				fmt.Sprintf(`api_key_env = %q`, pick("openai", cfg.LLM.APIKeyEnv, "OPENAI_API_KEY")),
+			},
+		},
 	}
 
 	_, err := fmt.Fprintf(w, `# Loom configuration — edit this file to change provider, model, or folder paths.
 # Run "loom scan" after any change.
 
-notes_dir = "%s"
-db_path   = "%s"
+# One or more folders to scan. Add as many paths as you like.
+# Example: notes_dirs = ["/home/user/work", "/home/user/personal"]
+notes_dirs = %s
+db_path    = %q
 
 # ── LLM provider ─────────────────────────────────────────────────────────────
 # Uncomment the block for the provider you want to use.
@@ -169,21 +154,20 @@ db_path   = "%s"
 #   export ANTHROPIC_API_KEY=sk-ant-...
 #   export OPENAI_API_KEY=sk-...
 
-`, cfg.NotesDir, cfg.DBPath)
+`, notesDirsToml, cfg.DBPath)
 	if err != nil {
 		return err
 	}
 
 	for _, b := range blocks {
-		if b.active {
-			fmt.Fprintf(w, "# %s\n", b.label)
-			for _, l := range b.lines {
+		fmt.Fprintf(w, "# %s\n", b.label)
+		for _, l := range b.lines {
+			if b.active {
 				fmt.Fprintln(w, l)
-			}
-		} else {
-			fmt.Fprintf(w, "# %s\n", b.label)
-			for _, l := range comment(b.lines) {
-				fmt.Fprintln(w, l)
+			} else if l == "" {
+				fmt.Fprintln(w, "#")
+			} else {
+				fmt.Fprintln(w, "# "+l)
 			}
 		}
 		fmt.Fprintln(w)
@@ -191,8 +175,19 @@ db_path   = "%s"
 	return nil
 }
 
+// rawConfig is used only during TOML decoding. It holds both the new
+// notes_dirs array and the legacy notes_dir string so we can migrate
+// old config files transparently.
+type rawConfig struct {
+	NotesDir  string    `toml:"notes_dir"`  // legacy — single path
+	NotesDirs []string  `toml:"notes_dirs"` // new — slice of paths
+	DBPath    string    `toml:"db_path"`
+	LLM       LLMConfig `toml:"llm"`
+}
+
 // Load reads config from path, merging values over Default(). A missing file
 // is not an error — defaults are returned and the path is remembered.
+// Old configs that use notes_dir (singular) are migrated automatically.
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	cfg.loadedFrom = path
@@ -206,18 +201,24 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	var scratch Config
-	if _, err := toml.Decode(string(b), &scratch); err != nil {
+	var raw rawConfig
+	if _, err := toml.Decode(string(b), &raw); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	cfg.merge(&scratch)
+
+	// Migrate legacy notes_dir → notes_dirs.
+	if len(raw.NotesDirs) == 0 && raw.NotesDir != "" {
+		raw.NotesDirs = []string{raw.NotesDir}
+	}
+
+	cfg.merge(&raw)
 	cfg.expand()
 	return cfg, nil
 }
 
-func (c *Config) merge(other *Config) {
-	if other.NotesDir != "" {
-		c.NotesDir = other.NotesDir
+func (c *Config) merge(other *rawConfig) {
+	if len(other.NotesDirs) > 0 {
+		c.NotesDirs = other.NotesDirs
 	}
 	if other.DBPath != "" {
 		c.DBPath = other.DBPath
@@ -237,7 +238,9 @@ func (c *Config) merge(other *Config) {
 }
 
 func (c *Config) expand() {
-	c.NotesDir = expandPath(c.NotesDir)
+	for i, d := range c.NotesDirs {
+		c.NotesDirs[i] = expandPath(d)
+	}
 	c.DBPath = expandPath(c.DBPath)
 }
 

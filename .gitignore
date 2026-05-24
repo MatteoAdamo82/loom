@@ -4,6 +4,8 @@ dist/
 /loom
 /loom-mcp
 /loom-gui
+cmd/loom/loom
+cmd/loom-mcp/loom-mcp
 
 # go build artifacts
 *.exe
@@ -18,8 +20,17 @@ vendor/
 *.db
 *.db-shm
 *.db-wal
-loom.toml
 .loom/
+
+# test & profiling artifacts
+coverage.out
+*.coverprofile
+*.prof
+
+# local env (API keys)
+.env
+
+CLAUDE.md
 
 # Wails GUI artefacts
 cmd/loom-gui/loom-gui
