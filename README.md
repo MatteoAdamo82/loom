@@ -18,6 +18,9 @@ This is a deliberate revival of [Andrej Karpathy's "LLM Wiki" pattern](https://g
 ├── articolo.html
 └── note-libere.md
 
+# or point Loom at folders that already exist on your machine:
+# notes_dirs = ["/Users/you/Documents/work", "/Users/you/Obsidian/vault"]
+
 ~/.loom/
 ├── config.toml                  ← provider + model + folder paths
 └── index.db                     ← SQLite (regenerable from the folder)
@@ -110,7 +113,9 @@ api_key_env = ""
 
 The `endpoint` field is optional for cloud providers (defaults are built in). For Ollama it defaults to `http://localhost:11434`.
 
-## Organising your folder
+## Organising your notes
+
+### Single folder
 
 Loom walks the notes folder recursively, so subdirectories work out of the box:
 
@@ -127,7 +132,33 @@ Loom walks the notes folder recursively, so subdirectories work out of the box:
 
 Citations in answers reflect the full relative path: `[work/project-x.md]`.
 
-**Moving or renaming files** is handled efficiently: Loom detects that the content hash matches an existing record and reuses the summary and keywords without an extra LLM call. The old path is removed from the index automatically.
+### Multiple folders — no need to move files
+
+You can point Loom at as many folders as you like. No need to copy or move anything:
+
+```toml
+notes_dirs = [
+  "/Users/you/Documents/work",
+  "/Users/you/Obsidian/vault",
+  "/Users/you/Desktop/papers",
+]
+```
+
+When more than one folder is configured, Loom prefixes each relative path with the folder's name to keep them unambiguous:
+
+```
+work/meeting-notes.md
+vault/zettelkasten.md
+papers/llm-wiki.pdf
+```
+
+Citations in answers carry this prefix too: `[work/meeting-notes.md]`.
+
+**Backward compatibility** — old configs that use `notes_dir = "..."` (singular) are migrated automatically; no changes needed.
+
+### Moving or renaming files
+
+Loom detects that the content hash matches an existing record and reuses the summary and keywords without an extra LLM call. The old path is removed from the index automatically.
 
 Hidden directories (names starting with `.`, e.g. `.git`, `.obsidian`) are always skipped.
 
@@ -216,7 +247,7 @@ go vet ./...
 # Smoke test against a real Ollama:
 mkdir -p /tmp/loomtest
 echo "# Carbonara\nGuanciale, pecorino, uova." > /tmp/loomtest/ricetta.md
-echo 'notes_dir = "/tmp/loomtest"
+echo 'notes_dirs = ["/tmp/loomtest"]
 db_path = "/tmp/loomtest.db"
 [llm]
 provider = "ollama"
