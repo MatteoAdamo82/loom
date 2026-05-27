@@ -236,20 +236,6 @@ LOOM_HTTP_ADDR=:8080 loom-http --config ~/.loom/config.toml
 curl -s localhost:8080/search -d '{"query":"check-in time","limit":3}'
 ```
 
-### Running it in a container (optional)
-
-A `Dockerfile` is provided for deployments that prefer to ship `loom-http` as a service. This is **opt-in** and does not change Loom's local-first nature — the binary still reads the same `config.toml` and notes folder, just mounted into the container.
-
-```bash
-docker build -t loom-http .
-docker run --rm -p 8080:8080 \
-  -v "$HOME/.loom/config.toml:/config/config.toml:ro" \
-  -v "$HOME/loom:/data/notes" \
-  -e LOOM_CONFIG=/config/config.toml \
-  -e LOOM_LLM_API_KEY=... \
-  loom-http
-```
-
 ## GUI
 
 `Loom.app` is a Wails desktop app with two panels: the file list on the left, the chat on the right. Click a file to open a read-only viewer with markdown rendering. Click a citation pill `[file.md]` in an answer to jump to that file. The settings cog opens a single modal — provider, model, endpoint, API-key env var, folder paths. That's all.

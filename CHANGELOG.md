@@ -18,14 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `POST /scan {force?}` — (re)index the notes folder.
   It reuses the same `config.toml` as `loom` and `loom-mcp` (`--config` /
   `LOOM_CONFIG`); listen address via `LOOM_HTTP_ADDR` (default `:8080`).
-- **`Dockerfile`** — optional containerised deployment of `loom-http` (pure-Go,
-  CGO-free static build). Strictly opt-in: Loom remains local-first and needs no
-  container for the CLI, MCP or GUI workflows.
 
 ### Notes
-- The HTTP server and Docker image are **additive and optional**. They do not
-  change Loom's core idea — a folder of files on your machine as the source of
-  truth, queried locally with no embeddings and no vector DB.
+- The HTTP server is **additive and optional**. It does not change Loom's core
+  idea — a folder of files on your machine as the source of truth, queried
+  locally with no embeddings and no vector DB.
 
 ## [0.4.0]
 
