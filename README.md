@@ -53,6 +53,9 @@ git clone https://github.com/MatteoAdamo82/loom.git
 cd loom
 go install ./cmd/loom ./cmd/loom-mcp
 
+# Optional: HTTP server (for integrating Loom into other apps/services)
+go install ./cmd/loom-http
+
 # GUI
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 cd cmd/loom-gui && wails build
@@ -213,6 +216,40 @@ Tools exposed:
 | `loom.list_files()` | Browse every indexed file with summary + keywords |
 | `loom.get_file(rel_path)` | Fetch full extracted content of one file |
 
+## Use Loom over HTTP (optional)
+
+Loom is local-first: the CLI, MCP and GUI all run against a folder on your machine and need no server. But if you want **another application** (a backend, a microservice, anything that isn't MCP-aware) to query your knowledge base, `loom-http` exposes the same index over a tiny REST API. It's entirely optional — Loom works without it.
+
+```bash
+LOOM_HTTP_ADDR=:8080 loom-http --config ~/.loom/config.toml
+```
+
+| Method & path | Purpose |
+|---|---|
+| `GET /healthz` | Liveness check |
+| `POST /search {query, limit?}` | Raw BM25 hits (`rel_path,title,summary,content,rank`) — **no LLM call** |
+| `POST /scan {force?}` | (Re)index the notes folder (uses the LLM to summarise) |
+
+`/search` is the natural fit for "retrieve, then let *my* model answer": your app gets the most relevant files and composes the reply with its own prompt. Example:
+
+```bash
+curl -s localhost:8080/search -d '{"query":"check-in time","limit":3}'
+```
+
+### Running it in a container (optional)
+
+A `Dockerfile` is provided for deployments that prefer to ship `loom-http` as a service. This is **opt-in** and does not change Loom's local-first nature — the binary still reads the same `config.toml` and notes folder, just mounted into the container.
+
+```bash
+docker build -t loom-http .
+docker run --rm -p 8080:8080 \
+  -v "$HOME/.loom/config.toml:/config/config.toml:ro" \
+  -v "$HOME/loom:/data/notes" \
+  -e LOOM_CONFIG=/config/config.toml \
+  -e LOOM_LLM_API_KEY=... \
+  loom-http
+```
+
 ## GUI
 
 `Loom.app` is a Wails desktop app with two panels: the file list on the left, the chat on the right. Click a file to open a read-only viewer with markdown rendering. Click a citation pill `[file.md]` in an answer to jump to that file. The settings cog opens a single modal — provider, model, endpoint, API-key env var, folder paths. That's all.
@@ -228,6 +265,7 @@ cd cmd/loom-gui && wails build  # release binary
 cmd/
   loom/        CLI: init / scan / ask
   loom-mcp/    MCP stdio server (Claude Code / Claude Desktop / any MCP client)
+  loom-http/   Optional REST server: /search, /scan, /healthz (for non-MCP apps)
   loom-gui/    Wails desktop app (Svelte + TS frontend)
 internal/
   config/      TOML loader (5 fields)
