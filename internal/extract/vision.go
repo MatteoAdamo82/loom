@@ -125,7 +125,26 @@ type ollamaVisionRequest struct {
 	Model    string                `json:"model"`
 	Messages []ollamaVisionMessage `json:"messages"`
 	Stream   bool                  `json:"stream"`
+	Options  ollamaVisionOptions   `json:"options"`
 }
+
+// ollamaVisionOptions caps the runtime cost of a vision call. Without an
+// explicit num_ctx, Ollama allocates the model's full default context (glm-ocr
+// advertises 131072), which inflates the KV cache to ~10 GB of (V)RAM for a
+// 1.1B model and pushes memory-constrained machines into swap until inference
+// stalls. A page of text is a few thousand tokens, so a modest context is
+// plenty and keeps the footprint to a few GB.
+type ollamaVisionOptions struct {
+	NumCtx     int `json:"num_ctx"`
+	NumPredict int `json:"num_predict"`
+}
+
+// OCR runtime caps. num_ctx must comfortably exceed the image-encoding token
+// count (a single image is ~6k tokens for glm-ocr) plus the transcribed text.
+const (
+	ocrNumCtx     = 16384
+	ocrNumPredict = 4096
+)
 
 type ollamaVisionMessage struct {
 	Role    string   `json:"role"`
@@ -152,7 +171,8 @@ func ollamaOCR(ctx context.Context, endpoint, model string, imageBytes []byte) (
 		Messages: []ollamaVisionMessage{
 			{Role: "user", Content: ocrPrompt, Images: []string{encoded}},
 		},
-		Stream: false,
+		Stream:  false,
+		Options: ollamaVisionOptions{NumCtx: ocrNumCtx, NumPredict: ocrNumPredict},
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal vision request: %w", err)

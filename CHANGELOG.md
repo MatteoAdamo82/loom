@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-31
+
+### Fixed
+- **OCR no longer exhausts memory.** Vision requests now pin `num_ctx`
+  (16384) and `num_predict` (4096) instead of letting Ollama allocate the
+  model's full default context. `glm-ocr` advertises a 131072-token context,
+  which inflated the KV cache to ~10 GB of (V)RAM for a 1.1B model — on a
+  machine with limited unified memory this swapped to a standstill and
+  inference stalled mid-scan, so the index never finished and every run looked
+  like a full re-scan. Capping the context drops the footprint to a few GB and
+  lets scans complete.
+- **`loom version` now reports the real version.** The goreleaser ldflag
+  targeted a non-existent `cmd/loom/cli.Version`; the variable lives in
+  `package main`, so released binaries always printed `dev`. Now stamped
+  correctly via `-X main.Version`.
+
 ## [0.4.1] - 2026-05-31
 
 ### Fixed
@@ -48,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Earlier releases. See the Git history and the
   [releases page](https://github.com/MatteoAdamo82/loom/releases) for details.
 
-[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/MatteoAdamo82/loom/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/MatteoAdamo82/loom/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/MatteoAdamo82/loom/releases/tag/v0.4.0

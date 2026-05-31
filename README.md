@@ -193,6 +193,12 @@ ocr_model = "glm-ocr"      # vision model for OCR — leave empty to disable
 
 When `ocr_model` is set, Loom also indexes **image files** directly (PNG, JPG, JPEG, WebP, GIF, TIFF). Drop a screenshot or a scanned page into your notes folder and it will be transcribed and searchable like any other file.
 
+> **Memory note:** Loom caps the OCR context window (`num_ctx`) so the vision
+> model stays within a few GB of RAM. Vision OCR is still CPU/GPU-heavy and runs
+> on the order of a minute or two per image on a laptop — the first scan of a
+> folder with many images can take a while, but subsequent scans skip unchanged
+> files via their mtime/hash.
+
 **Option B — Tesseract** (fallback when `ocr_model` is not set):
 
 ```bash

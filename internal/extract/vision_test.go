@@ -113,6 +113,15 @@ func TestVisionExtractorOCRCallsOllamaAndReturnsContent(t *testing.T) {
 	if captured.Stream {
 		t.Error("stream should be false")
 	}
+	// Regression: the request must cap num_ctx so Ollama doesn't allocate the
+	// model's full default context (glm-ocr: 131072), which blows the KV cache
+	// up to ~10 GB and swaps memory-constrained machines to a standstill.
+	if captured.Options.NumCtx != ocrNumCtx {
+		t.Errorf("num_ctx = %d, want %d", captured.Options.NumCtx, ocrNumCtx)
+	}
+	if captured.Options.NumPredict != ocrNumPredict {
+		t.Errorf("num_predict = %d, want %d", captured.Options.NumPredict, ocrNumPredict)
+	}
 }
 
 func TestVisionExtractorOCRErrorStatus(t *testing.T) {

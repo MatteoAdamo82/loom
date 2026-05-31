@@ -25,7 +25,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/MatteoAdamo82/loom/cmd/loom/cli.Version={{.Version}}
+      - -X main.Version={{.Version}}
 
   - id: loom-mcp
     main: ./cmd/loom-mcp
