@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/MatteoAdamo82/loom/internal/config"
+	"github.com/MatteoAdamo82/loom/internal/extract"
 	"github.com/MatteoAdamo82/loom/internal/index"
 	llmpkg "github.com/MatteoAdamo82/loom/internal/llm"
 	"github.com/MatteoAdamo82/loom/internal/query"
@@ -242,6 +243,9 @@ func (a *App) Rescan(force bool) ScanResultVM {
 	defer func() { a.scanCancel = nil }()
 
 	ix := index.New(cfg.NotesDirs, store, lc)
+	if m := cfg.LLM.OCRModel; m != "" {
+		ix.Registry = extract.NewRegistryWithOCR(cfg.LLM.Endpoint, m)
+	}
 	ix.OnEvent = func(e index.Event) {
 		wailsruntime.EventsEmit(a.ctx, "scan:progress", map[string]any{
 			"phase":    e.Phase,

@@ -28,10 +28,16 @@ const minTextPerPage = 16
 //
 // Override TESSERACT_LANGS env var (e.g. "eng+ita") to change OCR languages.
 type PDF struct {
-	// renderPages and ocrImage are test seams. Production callers leave them
-	// nil; the package supplies real implementations that shell out.
+	// renderPages and ocrImage are test seams for the tesseract path.
+	// Production callers leave them nil; the package supplies real
+	// implementations that shell out.
 	renderPages func(ctx context.Context, pdfPath, outDir string, dpi int) ([]string, error)
 	ocrImage    func(ctx context.Context, imagePath, languages string) (string, error)
+
+	// ocrVision, when non-nil, is used instead of tesseract for pages that
+	// have too little selectable text. It receives the raw PNG bytes of the
+	// rendered page and returns markdown text.
+	ocrVision OCRFunc
 }
 
 func (PDF) Supports(source string) bool {
@@ -85,8 +91,10 @@ func (p PDF) ExtractContext(ctx context.Context, path string) (*Document, error)
 	}, nil
 }
 
-// shouldTryOCR returns true when at least one page came up too short and the
-// OCR tools are present on PATH.
+// shouldTryOCR returns true when at least one page came up too short and
+// the prerequisites for the active OCR backend are available.
+// - vision path (ocrVision set): only requires pdftoppm to render pages.
+// - tesseract path: requires both pdftoppm and tesseract on PATH.
 func (p PDF) shouldTryOCR(pages []pdfPage) bool {
 	short := false
 	for _, pg := range pages {
@@ -100,6 +108,9 @@ func (p PDF) shouldTryOCR(pages []pdfPage) bool {
 	}
 	if _, err := exec.LookPath("pdftoppm"); err != nil {
 		return false
+	}
+	if p.ocrVision != nil {
+		return true // vision model replaces tesseract
 	}
 	if _, err := exec.LookPath("tesseract"); err != nil {
 		return false
@@ -143,6 +154,10 @@ func (p PDF) runOCROnPages(ctx context.Context, pdfPath string, pages []pdfPage)
 		pages = append(pages, pdfPage{number: len(pages) + 1})
 	}
 
+	// When a vision model is configured, use it instead of tesseract for
+	// each empty page — pass raw PNG bytes rather than a file path.
+	visionFn := p.ocrVision
+
 	langs := os.Getenv("TESSERACT_LANGS")
 	if langs == "" {
 		langs = "eng"
@@ -153,10 +168,28 @@ func (p PDF) runOCROnPages(ctx context.Context, pdfPath string, pages []pdfPage)
 		if len(strings.TrimSpace(pg.text)) >= minTextPerPage {
 			continue
 		}
-		text, err := ocr(ctx, img, langs)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "loom: tesseract failed on page %d: %v\n", i+1, err)
-			continue
+
+		var (
+			text    string
+			ocrErr  error
+		)
+		if visionFn != nil {
+			imgBytes, readErr := os.ReadFile(img)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "loom: read rendered page %d: %v\n", i+1, readErr)
+				continue
+			}
+			text, ocrErr = visionFn(ctx, imgBytes)
+			if ocrErr != nil {
+				fmt.Fprintf(os.Stderr, "loom: vision OCR failed on page %d: %v\n", i+1, ocrErr)
+				continue
+			}
+		} else {
+			text, ocrErr = ocr(ctx, img, langs)
+			if ocrErr != nil {
+				fmt.Fprintf(os.Stderr, "loom: tesseract failed on page %d: %v\n", i+1, ocrErr)
+				continue
+			}
 		}
 		pg.text = strings.TrimSpace(text)
 		pg.viaOCR = true

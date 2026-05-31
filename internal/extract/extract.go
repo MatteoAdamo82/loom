@@ -47,6 +47,17 @@ func (r *Registry) Resolve(source string) (Extractor, error) {
 	return nil, fmt.Errorf("no extractor for %q", source)
 }
 
+// Supports reports whether any extractor in the registry handles source.
+// This is used by the scanner to decide which files to walk.
+func (r *Registry) Supports(source string) bool {
+	for _, e := range r.ext {
+		if e.Supports(source) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsURL reports whether s is an http/https URL string. Exposed so callers can
 // shortcut path-only logic.
 func IsURL(s string) bool {
@@ -68,6 +79,17 @@ func DefaultRegistry() *Registry {
 // extractor. Use this when you want OCR fallback or a custom cache dir.
 func NewRegistryWithPDF(pdf PDF) *Registry {
 	return NewRegistry(Text{}, pdf, HTML{})
+}
+
+// NewRegistryWithOCR returns a Registry that includes a VisionExtractor for
+// image files (PNG, JPG, …) and injects the same OCR function into the PDF
+// extractor so that scanned PDFs are processed by the vision model instead of
+// tesseract. endpoint and model are the Ollama server URL and vision model name
+// (e.g. "http://localhost:11434", "glm-ocr").
+func NewRegistryWithOCR(endpoint, model string) *Registry {
+	v := NewVisionExtractor(endpoint, model)
+	p := PDF{ocrVision: v.OCR}
+	return NewRegistry(Text{}, p, HTML{}, v)
 }
 
 // ----- text (txt, md) -------------------------------------------------------

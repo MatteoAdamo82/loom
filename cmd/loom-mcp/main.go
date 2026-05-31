@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/MatteoAdamo82/loom/internal/config"
+	"github.com/MatteoAdamo82/loom/internal/extract"
 	"github.com/MatteoAdamo82/loom/internal/index"
 	llmpkg "github.com/MatteoAdamo82/loom/internal/llm"
 	"github.com/MatteoAdamo82/loom/internal/query"
@@ -148,6 +149,9 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			force := req.GetBool("force", false)
 			ix := index.New(cfg.NotesDirs, store, client)
+				if m := cfg.LLM.OCRModel; m != "" {
+					ix.Registry = extract.NewRegistryWithOCR(cfg.LLM.Endpoint, m)
+				}
 			var (
 				res *index.Result
 				err error

@@ -322,14 +322,6 @@ type diskEntry struct {
 	mtime   int64
 }
 
-var supportedExts = map[string]bool{
-	".md":       true,
-	".markdown": true,
-	".txt":      true,
-	".pdf":      true,
-	".html":     true,
-	".htm":      true,
-}
 
 func (ix *Indexer) walk() ([]diskEntry, error) {
 	// When scanning more than one root directory, prefix every relPath with
@@ -378,7 +370,10 @@ func (ix *Indexer) walk() ([]diskEntry, error) {
 			if strings.HasPrefix(d.Name(), ".") {
 				return nil
 			}
-			if !supportedExts[strings.ToLower(filepath.Ext(p))] {
+			// Ask the registry whether any extractor handles this file.
+			// This covers the base types (md, pdf, html, txt) and also image
+			// types when a VisionExtractor has been registered.
+			if !ix.Registry.Supports(p) {
 				return nil
 			}
 			info, err := d.Info()

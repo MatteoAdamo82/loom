@@ -26,7 +26,7 @@ This is a deliberate revival of [Andrej Karpathy's "LLM Wiki" pattern](https://g
 └── index.db                     ← SQLite (regenerable from the folder)
 ```
 
-**Scan** — for every new or modified file, Loom extracts text (via `ledongthuc/pdf`, `go-readability`, or plain read), then asks the LLM:
+**Scan** — for every new or modified file, Loom extracts text (via `ledongthuc/pdf`, `go-readability`, plain read, or a vision OCR model for images), then asks the LLM:
 > "Riassumi in 150-250 parole + estrai 5-8 keywords come JSON."
 
 The summary, keywords, content, hash and mtime go into one SQLite row plus an FTS5 mirror.
@@ -165,15 +165,35 @@ Loom detects that the content hash matches an existing record and reuses the sum
 
 Hidden directories (names starting with `.`, e.g. `.git`, `.obsidian`) are always skipped.
 
-## PDFs
+## PDFs and images
 
-PDFs are best-effort:
+### Text-based PDFs
 
-1. Pure-Go text extraction first (`ledongthuc/pdf`).
-2. If a page comes out empty AND `pdftoppm` + `tesseract` are on PATH, OCR fills the gaps.
-3. If both fail, the file is still indexed with a placeholder summary; the LLM just won't quote it.
+Pure-Go extraction (`ledongthuc/pdf`) — no dependencies, always runs.
 
-To install OCR tools:
+### Scanned PDFs and image files (OCR)
+
+Two OCR backends are available, both optional:
+
+**Option A — GLM-OCR via Ollama (recommended)**: a local vision model that outputs structured markdown (preserves headings, tables, lists).
+
+```bash
+ollama pull glm-ocr
+```
+
+Then add one line to `~/.loom/config.toml`:
+
+```toml
+[llm]
+provider  = "ollama"
+model     = "gemma4:31b"   # your chat model
+endpoint  = "http://localhost:11434"
+ocr_model = "glm-ocr"      # vision model for OCR — leave empty to disable
+```
+
+When `ocr_model` is set, Loom also indexes **image files** directly (PNG, JPG, JPEG, WebP, GIF, TIFF). Drop a screenshot or a scanned page into your notes folder and it will be transcribed and searchable like any other file.
+
+**Option B — Tesseract** (fallback when `ocr_model` is not set):
 
 ```bash
 # macOS
@@ -183,11 +203,15 @@ brew install poppler tesseract tesseract-lang
 sudo apt install poppler-utils tesseract-ocr tesseract-ocr-ita
 ```
 
-Want a non-English language? Set `TESSERACT_LANGS` in your shell:
+Override the OCR language:
 
 ```bash
 export TESSERACT_LANGS="eng+ita"
 ```
+
+### Fallback behaviour
+
+If all OCR options fail, the file is still indexed with a placeholder summary; the LLM won't quote it but the user sees it in the list.
 
 ## Use Loom as memory for Claude Code / Claude Desktop
 

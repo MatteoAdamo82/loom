@@ -28,6 +28,7 @@ type LLMConfig struct {
 	Model     string `toml:"model"`
 	Endpoint  string `toml:"endpoint"`
 	APIKeyEnv string `toml:"api_key_env"` // env var name holding the key
+	OCRModel  string `toml:"ocr_model"`   // optional: Ollama vision model for image/PDF OCR
 }
 
 func Default() *Config {
@@ -113,6 +114,7 @@ func writeTemplate(cfg *Config, w io.Writer) error {
 				fmt.Sprintf(`model       = %q`, pick("ollama", cfg.LLM.Model, "llama3.1:8b")),
 				fmt.Sprintf(`endpoint    = %q`, pick("ollama", cfg.LLM.Endpoint, "http://localhost:11434")),
 				`api_key_env = ""`,
+				`# ocr_model  = "glm-ocr"  # optional: vision model for PDF/image OCR`,
 			},
 		},
 		{

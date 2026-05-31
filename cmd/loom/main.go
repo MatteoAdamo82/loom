@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/MatteoAdamo82/loom/internal/config"
+	"github.com/MatteoAdamo82/loom/internal/extract"
 	"github.com/MatteoAdamo82/loom/internal/index"
 	"github.com/MatteoAdamo82/loom/internal/llm"
 	"github.com/MatteoAdamo82/loom/internal/query"
@@ -144,6 +145,9 @@ func cmdScan(args []string) error {
 	defer rt.store.Close()
 
 	ix := index.New(rt.cfg.NotesDirs, rt.store, rt.llm)
+	if m := rt.cfg.LLM.OCRModel; m != "" {
+		ix.Registry = extract.NewRegistryWithOCR(rt.cfg.LLM.Endpoint, m)
+	}
 	ix.OnEvent = func(e index.Event) {
 		switch e.Phase {
 		case "summarize":
