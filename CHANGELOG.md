@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-31
+
+### Fixed
+- **`ocr_model` is now honored.** `config.merge()` copied every `[llm]` field
+  except `ocr_model`, so the setting was parsed and then silently dropped: the
+  `VisionExtractor` was never registered and image/PDF OCR did nothing even when
+  configured. Image and scanned-PDF indexing now works as documented.
+
 ### Added
+- **GLM-OCR via Ollama** — when `ocr_model` is set in the `[llm]` config block,
+  Loom transcribes image files (PNG/JPG/WebP/GIF/TIFF) and scanned PDF pages
+  through an Ollama vision model and indexes the extracted text like any other
+  document.
 - **`loom-http`** — an optional REST server (`cmd/loom-http`) that exposes the
   Loom index over HTTP for applications that aren't MCP-aware (e.g. a backend or
   microservice that wants to use Loom as a retrieval layer):
@@ -36,5 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Earlier releases. See the Git history and the
   [releases page](https://github.com/MatteoAdamo82/loom/releases) for details.
 
-[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/MatteoAdamo82/loom/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/MatteoAdamo82/loom/releases/tag/v0.4.0

@@ -237,6 +237,9 @@ func (c *Config) merge(other *rawConfig) {
 	if other.LLM.APIKeyEnv != "" {
 		c.LLM.APIKeyEnv = other.LLM.APIKeyEnv
 	}
+	if other.LLM.OCRModel != "" {
+		c.LLM.OCRModel = other.LLM.OCRModel
+	}
 }
 
 func (c *Config) expand() {

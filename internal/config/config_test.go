@@ -158,6 +158,34 @@ endpoint = "http://localhost:11434"
 	}
 }
 
+// TestLoadOCRModelFromLLMBlock is a regression test: ocr_model was parsed into
+// the raw config but dropped by merge(), so the VisionExtractor was never
+// registered and image/PDF OCR silently did nothing despite the setting.
+func TestLoadOCRModelFromLLMBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	content := `notes_dirs = ["/tmp/work"]
+db_path = "/tmp/index.db"
+[llm]
+provider  = "ollama"
+model     = "llama3.1:8b"
+endpoint  = "http://localhost:11434"
+ocr_model = "glm-ocr"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLM.OCRModel != "glm-ocr" {
+		t.Errorf("ocr_model: want %q, got %q", "glm-ocr", cfg.LLM.OCRModel)
+	}
+}
+
 func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	cfg, err := Load("/nonexistent/path/config.toml")
 	if err != nil {
