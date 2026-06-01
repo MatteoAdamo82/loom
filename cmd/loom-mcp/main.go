@@ -75,7 +75,7 @@ func main() {
 
 func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Client, cfg *config.Config) {
 	srv.AddTool(
-		mcp.NewTool("loom.ask",
+		mcp.NewTool("loom_ask",
 			mcp.WithDescription("Ask a natural-language question against the indexed notes folder. Loom runs a single LLM call over the BM25 top hits and returns a grounded answer with file citations."),
 			mcp.WithString("question", mcp.Required(),
 				mcp.Description("The user question, in any language")),
@@ -103,7 +103,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 	)
 
 	srv.AddTool(
-		mcp.NewTool("loom.search",
+		mcp.NewTool("loom_search",
 			mcp.WithDescription("Run a raw BM25 search against the FTS index without invoking the LLM. Use when you want a deterministic list of relevant files."),
 			mcp.WithString("query", mcp.Required(),
 				mcp.Description("Free-text search terms")),
@@ -141,7 +141,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 	)
 
 	srv.AddTool(
-		mcp.NewTool("loom.scan",
+		mcp.NewTool("loom_scan",
 			mcp.WithDescription("(Re)index the notes folder. Walks the configured notes_dir, asks the LLM to summarise new/modified files, and updates the SQLite index. Returns counts."),
 			mcp.WithBoolean("force",
 				mcp.Description("Re-summarise every file, even unchanged ones (default: false)")),
@@ -187,7 +187,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 	)
 
 	srv.AddTool(
-		mcp.NewTool("loom.list_files",
+		mcp.NewTool("loom_list_files",
 			mcp.WithDescription("List every indexed file with its title, kind, summary, and keywords. Cheap — no LLM call."),
 		),
 		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -211,7 +211,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 	)
 
 	srv.AddTool(
-		mcp.NewTool("loom.get_file",
+		mcp.NewTool("loom_get_file",
 			mcp.WithDescription("Fetch the full extracted content of a single file (so the caller can quote it verbatim or feed it to a different prompt)."),
 			mcp.WithString("rel_path", mcp.Required(),
 				mcp.Description("File path relative to notes_dir, e.g. 'ricette.md' or 'papers/llm-wiki.pdf'")),

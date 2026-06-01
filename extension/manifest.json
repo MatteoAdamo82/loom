@@ -1,0 +1,43 @@
+{
+  "manifest_version": "0.3",
+  "name": "loom",
+  "display_name": "Loom",
+  "version": "0.0.0",
+  "description": "Local folder-of-files knowledge base (SQLite + BM25 + LLM). Search and ask over your own notes — no embeddings, no cloud.",
+  "author": {
+    "name": "Matteo Adamo",
+    "url": "https://github.com/MatteoAdamo82/loom"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MatteoAdamo82/loom"
+  },
+  "license": "MIT",
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/loom-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/bin/loom-mcp",
+      "args": [],
+      "env": {
+        "LOOM_CONFIG": "${user_config.config_path}"
+      }
+    }
+  },
+  "user_config": {
+    "config_path": {
+      "type": "file",
+      "title": "Loom config file",
+      "description": "Path to your Loom config.toml (created by `loom init`). Defaults to ~/.loom/config.toml.",
+      "default": "${HOME}/.loom/config.toml",
+      "required": true
+    }
+  },
+  "tools": [
+    { "name": "loom_search", "description": "BM25 search over the local index — raw hits, no LLM call" },
+    { "name": "loom_ask", "description": "Ask a question; retrieves then answers with the configured LLM, with citations" },
+    { "name": "loom_get_file", "description": "Return the full indexed content of a file by rel_path" },
+    { "name": "loom_list_files", "description": "List every indexed file with summary and keywords" },
+    { "name": "loom_scan", "description": "(Re)index the notes folder" }
+  ]
+}

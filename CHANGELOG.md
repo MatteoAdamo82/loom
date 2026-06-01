@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-01
+
+### Fixed
+- **MCP tool names are now valid identifiers.** The tools were registered as
+  `loom.ask`, `loom.search`, … but the dot is not allowed by the MCP tool-name
+  pattern (`^[a-zA-Z0-9_-]{1,64}$`). Stricter clients (e.g. the Claude Desktop
+  app) rejected the whole server. Renamed to `loom_ask`, `loom_search`,
+  `loom_scan`, `loom_list_files`, `loom_get_file`.
+
+### Added
+- **Claude Desktop extension (`.mcpb`).** The current Claude Desktop app loads
+  MCP servers as Desktop Extensions, not from `claude_desktop_config.json`.
+  Loom now ships a `.mcpb` bundle per platform (`darwin-arm64`, `darwin-amd64`,
+  `windows-amd64`) on each release, with the config-file path exposed as a
+  user setting. Build one locally with `scripts/build-mcpb.sh`. README now
+  documents the Claude Code (`settings.json`) and Claude Desktop (`.mcpb`)
+  paths separately.
+
 ## [0.4.2] - 2026-05-31
 
 ### Fixed
@@ -64,7 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Earlier releases. See the Git history and the
   [releases page](https://github.com/MatteoAdamo82/loom/releases) for details.
 
-[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/MatteoAdamo82/loom/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/MatteoAdamo82/loom/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/MatteoAdamo82/loom/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/MatteoAdamo82/loom/releases/tag/v0.4.0

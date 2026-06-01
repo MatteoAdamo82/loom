@@ -221,7 +221,11 @@ If all OCR options fail, the file is still indexed with a placeholder summary; t
 
 ## Use Loom as memory for Claude Code / Claude Desktop
 
-`loom-mcp` is a stdio MCP server that exposes the indexed folder to any MCP-aware client. Add to `~/.claude/settings.json`:
+`loom-mcp` is a stdio MCP server that exposes the indexed folder to any MCP-aware client. How you connect it depends on the client.
+
+### Claude Code (and other config-file MCP clients)
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -234,17 +238,32 @@ If all OCR options fail, the file is still indexed with a placeholder summary; t
 }
 ```
 
-Then ask Claude things like *"check loom for what I wrote about postgres tuning"* — it'll call `loom.ask` and ground its answer in your notes.
+### Claude Desktop (the macOS/Windows app)
+
+The current Claude Desktop app does **not** read `claude_desktop_config.json` or `~/.claude/settings.json` — it loads MCP servers as **Desktop Extensions** (`.mcpb` bundles). Install Loom this way:
+
+1. Download `loom-<version>-<os>-<arch>.mcpb` from the [releases page](https://github.com/MatteoAdamo82/loom/releases) (e.g. `darwin-arm64` for Apple Silicon Macs).
+2. In the app: **Settings → Extensions → Install Extension…** and pick the `.mcpb` file (or drag it onto the window).
+3. When prompted, set **Loom config file** to your `~/.loom/config.toml`, then enable the extension.
+4. First launch on macOS may flag the unsigned binary: **System Settings → Privacy & Security → Open Anyway**.
+
+To build a bundle yourself instead of downloading one:
+
+```bash
+scripts/build-mcpb.sh 0.4.3 darwin arm64   # → dist/loom-0.4.3-darwin-arm64.mcpb
+```
+
+Then ask Claude things like *"check loom for what I wrote about postgres tuning"* — it'll call `loom_ask` and ground its answer in your notes.
 
 Tools exposed:
 
 | Tool | Purpose |
 |---|---|
-| `loom.ask(question, top_k?)` | One-shot answer with file citations (1 LLM call) |
-| `loom.search(query, limit?)` | Raw BM25 hits, no LLM call |
-| `loom.scan(force?)` | (Re)index the notes folder |
-| `loom.list_files()` | Browse every indexed file with summary + keywords |
-| `loom.get_file(rel_path)` | Fetch full extracted content of one file |
+| `loom_ask(question, top_k?)` | One-shot answer with file citations (1 LLM call) |
+| `loom_search(query, limit?)` | Raw BM25 hits, no LLM call |
+| `loom_scan(force?)` | (Re)index the notes folder |
+| `loom_list_files()` | Browse every indexed file with summary + keywords |
+| `loom_get_file(rel_path)` | Fetch full extracted content of one file |
 
 ## Use Loom over HTTP (optional)
 
@@ -290,6 +309,8 @@ internal/
   llm/         Ollama / OpenAI / Anthropic adapters
   query/       BM25 search → 1 LLM call → answer + citations
   storage/     SQLite (one `files` table + FTS5 mirror)
+extension/     Claude Desktop extension manifest (.mcpb template)
+scripts/       build-mcpb.sh — package loom-mcp as a .mcpb bundle
 ```
 
 ## Development
