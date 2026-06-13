@@ -6,9 +6,12 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -191,4 +194,186 @@ func ftsQuery(q string) string {
 		fields[i] = `"` + f + `"`
 	}
 	return strings.Join(fields, " OR ")
+}
+
+// ---------------------------------------------------------------------------
+// Vectors — optional hybrid (BM25 + semantic) search.
+//
+// Vectors live in a separate table (file_vectors) so the BM25 path is byte-for
+// byte unchanged when embeddings are disabled. Search is pure-Go brute-force
+// cosine: at Loom's scale (hundreds–thousands of files) this is sub-millisecond
+// and keeps the build CGO-free (no sqlite-vec extension).
+// ---------------------------------------------------------------------------
+
+// rrfK is the Reciprocal Rank Fusion constant. 60 is the value from the
+// original RRF paper and the de-facto default; it dampens the contribution of
+// low-ranked items without needing to normalise BM25 and cosine scores.
+const rrfK = 60
+
+func encodeVector(v []float32) []byte {
+	b := make([]byte, 4*len(v))
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(f))
+	}
+	return b
+}
+
+func decodeVector(b []byte) []float32 {
+	n := len(b) / 4
+	v := make([]float32, n)
+	for i := 0; i < n; i++ {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
+	}
+	return v
+}
+
+func l2norm(v []float32) float64 {
+	var s float64
+	for _, f := range v {
+		s += float64(f) * float64(f)
+	}
+	return math.Sqrt(s)
+}
+
+// cosine returns the cosine similarity of a and b. aNorm is passed in so the
+// query vector's norm is computed once across the whole scan.
+func cosine(a, b []float32, aNorm, bNorm float64) float64 {
+	if aNorm == 0 || bNorm == 0 {
+		return 0
+	}
+	var dot float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+	}
+	return dot / (aNorm * bNorm)
+}
+
+// SetVector stores (or replaces) the embedding for the file at relPath. A
+// zero-length vector is a no-op. Unknown relPath also no-ops (the INSERT…SELECT
+// simply matches no rows).
+func (s *Store) SetVector(ctx context.Context, relPath string, vec []float32, model string) error {
+	if len(vec) == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO file_vectors (file_id, dim, model, vec)
+		SELECT id, ?, ?, ? FROM files WHERE rel_path = ?
+		ON CONFLICT(file_id) DO UPDATE SET
+			dim = excluded.dim, model = excluded.model, vec = excluded.vec`,
+		len(vec), model, encodeVector(vec), relPath)
+	return err
+}
+
+// HasVectors reports whether any file vector exists. Callers use it to decide
+// whether hybrid search is worth attempting.
+func (s *Store) HasVectors(ctx context.Context) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM file_vectors`).Scan(&n)
+	return n > 0, err
+}
+
+// VectorSearch returns up to limit files ranked by cosine similarity to vec.
+// Vectors whose dimension differs from len(vec) (e.g. indexed with a different
+// embedding model) are skipped, so a model change degrades gracefully rather
+// than erroring — until the next `loom scan --force` re-embeds everything.
+func (s *Store) VectorSearch(ctx context.Context, vec []float32, limit int) ([]*Hit, error) {
+	if len(vec) == 0 {
+		return nil, ErrNotFound
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT f.id, f.rel_path, f.hash, f.mtime, f.kind, f.title, f.content,
+		       f.summary, f.keywords, f.indexed_at, v.vec
+		FROM file_vectors v JOIN files f ON f.id = v.file_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	qNorm := l2norm(vec)
+	var scored []*Hit
+	for rows.Next() {
+		var h Hit
+		var keywordsJSON string
+		var blob []byte
+		if err := rows.Scan(
+			&h.ID, &h.RelPath, &h.Hash, &h.MTime, &h.Kind, &h.Title, &h.Content,
+			&h.Summary, &keywordsJSON, &h.IndexedAt, &blob,
+		); err != nil {
+			return nil, err
+		}
+		fv := decodeVector(blob)
+		if len(fv) != len(vec) {
+			continue // indexed with a different model/dimension — skip
+		}
+		_ = json.Unmarshal([]byte(keywordsJSON), &h.Keywords)
+		h.Rank = cosine(vec, fv, qNorm, l2norm(fv))
+		scored = append(scored, &h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Rank > scored[j].Rank })
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	return scored, nil
+}
+
+// HybridSearch fuses BM25 and vector rankings with Reciprocal Rank Fusion and
+// returns up to limit hits. It pulls a wider candidate pool from each side, then
+// fuses: a file ranked high by either signal surfaces. On the returned hits,
+// Rank holds the RRF score (higher is better — note this is the opposite sense
+// of the bm25() rank used by Search). Returns ErrNotFound if both sides empty.
+func (s *Store) HybridSearch(ctx context.Context, query string, vec []float32, limit int) ([]*Hit, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	cand := limit * 4
+	if cand < 20 {
+		cand = 20
+	}
+
+	bm, err := s.Search(ctx, query, cand)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	vs, err := s.VectorSearch(ctx, vec, cand)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
+	type agg struct {
+		hit   *Hit
+		score float64
+	}
+	by := make(map[int64]*agg)
+	fuse := func(list []*Hit) {
+		for rank, h := range list {
+			a := by[h.ID]
+			if a == nil {
+				a = &agg{hit: h}
+				by[h.ID] = a
+			}
+			a.score += 1.0 / float64(rrfK+rank+1)
+		}
+	}
+	fuse(bm)
+	fuse(vs)
+
+	out := make([]*Hit, 0, len(by))
+	for _, a := range by {
+		a.hit.Rank = a.score
+		out = append(out, a.hit)
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Rank > out[j].Rank })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }

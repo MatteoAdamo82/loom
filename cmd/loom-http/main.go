@@ -23,6 +23,7 @@ import (
 	"github.com/MatteoAdamo82/loom/internal/config"
 	"github.com/MatteoAdamo82/loom/internal/index"
 	llmpkg "github.com/MatteoAdamo82/loom/internal/llm"
+	"github.com/MatteoAdamo82/loom/internal/query"
 	"github.com/MatteoAdamo82/loom/internal/storage"
 )
 
@@ -70,7 +71,21 @@ func main() {
 		log.Printf("loom-http: LLM provider unavailable, /scan disabled: %v", llmErr)
 	}
 
-	srv := &server{store: store, client: client, cfg: cfg}
+	// Embeddings are optional. When enabled, /search fuses BM25 + vector (hybrid)
+	// and /scan stores a vector per file. If the embedder can't be built, log and
+	// keep going on pure BM25 — never fatal.
+	var embedder llmpkg.Embedder
+	if cfg.Embeddings.Enabled {
+		e, eerr := llmpkg.BuildEmbedder(cfg.Embeddings.Provider, cfg.Embeddings.Model, cfg.Embeddings.Endpoint, cfg.Embeddings.APIKey())
+		if eerr != nil {
+			log.Printf("loom-http: embeddings enabled but unavailable, using BM25 only: %v", eerr)
+		} else {
+			embedder = e
+			log.Printf("loom-http: hybrid search enabled (%s)", e.Name())
+		}
+	}
+
+	srv := &server{store: store, client: client, embedder: embedder, cfg: cfg}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.health)
@@ -88,9 +103,10 @@ func main() {
 }
 
 type server struct {
-	store  *storage.Store
-	client llmpkg.Client
-	cfg    *config.Config
+	store    *storage.Store
+	client   llmpkg.Client
+	embedder llmpkg.Embedder // nil → BM25 only
+	cfg      *config.Config
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
@@ -121,9 +137,9 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 5
 	}
-	hits, err := s.store.Search(r.Context(), req.Query, limit)
+	hits, err := query.Retrieve(r.Context(), s.store, s.embedder, req.Query, limit)
 	if err != nil {
-		// ErrNotFound (empty index / no query) -> empty result, not a 500
+		// empty index / no query / transient retrieval error -> empty result, not a 500
 		writeJSON(w, http.StatusOK, map[string]any{"hits": []any{}})
 		return
 	}
@@ -159,6 +175,7 @@ func (s *server) scan(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	ix := index.New(s.cfg.NotesDirs, s.store, s.client)
+	ix.Embedder = s.embedder
 	var (
 		res *index.Result
 		err error

@@ -24,12 +24,13 @@ type App struct {
 	ctx     context.Context
 	cfgPath string
 
-	mu      sync.RWMutex
-	cfg     *config.Config
-	store   *storage.Store
-	llm     llmpkg.Client
-	llmName string
-	loadErr string
+	mu       sync.RWMutex
+	cfg      *config.Config
+	store    *storage.Store
+	llm      llmpkg.Client
+	embedder llmpkg.Embedder // nil → BM25 only
+	llmName  string
+	loadErr  string
 
 	scanMu     sync.Mutex
 	scanCancel context.CancelFunc
@@ -87,9 +88,20 @@ func (a *App) bootstrap() {
 		_ = store.Close()
 		return
 	}
+	var embedder llmpkg.Embedder
+	if cfg.Embeddings.Enabled {
+		if e, eerr := llmpkg.BuildEmbedder(cfg.Embeddings.Provider, cfg.Embeddings.Model, cfg.Embeddings.Endpoint, cfg.Embeddings.APIKey()); eerr != nil {
+			a.loadErr = fmt.Sprintf("init embeddings: %v", eerr)
+			_ = store.Close()
+			return
+		} else {
+			embedder = e
+		}
+	}
 	a.cfg = cfg
 	a.store = store
 	a.llm = client
+	a.embedder = embedder
 	a.llmName = client.Name()
 	a.loadErr = ""
 }
@@ -236,6 +248,7 @@ func (a *App) Rescan(force bool) ScanResultVM {
 	cfg := a.cfg
 	store := a.store
 	lc := a.llm
+	emb := a.embedder
 	a.mu.RUnlock()
 
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -243,6 +256,7 @@ func (a *App) Rescan(force bool) ScanResultVM {
 	defer func() { a.scanCancel = nil }()
 
 	ix := index.New(cfg.NotesDirs, store, lc)
+	ix.Embedder = emb
 	if m := cfg.LLM.OCRModel; m != "" {
 		ix.Registry = extract.NewRegistryWithOCR(cfg.LLM.Endpoint, m)
 	}
@@ -303,9 +317,10 @@ func (a *App) Ask(question string) AskResultVM {
 	}
 	store := a.store
 	lc := a.llm
+	emb := a.embedder
 	a.mu.RUnlock()
 
-	res, err := query.Stream(a.ctx, store, lc, question, query.DefaultTopK, func(chunk string) {
+	res, err := query.Stream(a.ctx, store, lc, emb, question, query.DefaultTopK, func(chunk string) {
 		wailsruntime.EventsEmit(a.ctx, "ask:chunk", chunk)
 	})
 	if err != nil {

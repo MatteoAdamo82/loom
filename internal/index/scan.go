@@ -32,6 +32,12 @@ type Result struct {
 	Duration time.Duration
 }
 
+// embedCharBudget caps how much of a file we feed to the embedding model. Small
+// embedding models have a short context (e.g. embeddinggemma ≈ 2K tokens); this
+// keeps the vector representative without overflowing it. Files larger than this
+// should be split upstream (one logical chunk per file).
+const embedCharBudget = 8000
+
 // processOutcome classifies the result of processing a single file.
 type processOutcome int
 
@@ -60,6 +66,7 @@ type Indexer struct {
 	NotesDirs  []string
 	Store      *storage.Store
 	LLM        llm.Client
+	Embedder   llm.Embedder // optional: when set, store a vector per file for hybrid search
 	Registry   *extract.Registry
 	Concurrent int
 	OnEvent    func(Event)
@@ -242,7 +249,7 @@ func (ix *Indexer) processOne(
 		// New path, matching hash → move/rename detected; inherit summary.
 		if known == nil {
 			if prior := lookupByHash(doc.Hash); prior != nil && prior.RelPath != e.relPath {
-				return outcomeMoved, ix.Store.Upsert(ctx, &storage.File{
+				if err := ix.Store.Upsert(ctx, &storage.File{
 					RelPath:  e.relPath,
 					Hash:     doc.Hash,
 					MTime:    e.mtime,
@@ -251,7 +258,12 @@ func (ix *Indexer) processOne(
 					Content:  doc.Content,
 					Summary:  prior.Summary,
 					Keywords: prior.Keywords,
-				})
+				}); err != nil {
+					return outcomeMoved, err
+				}
+				// The moved file is a new row (new id) → it has no vector yet.
+				ix.embedFile(ctx, e.relPath, doc.Title, doc.Content)
+				return outcomeMoved, nil
 			}
 		}
 	}
@@ -266,7 +278,7 @@ func (ix *Indexer) processOne(
 	if known == nil {
 		outcome = outcomeAdded
 	}
-	return outcome, ix.Store.Upsert(ctx, &storage.File{
+	if err := ix.Store.Upsert(ctx, &storage.File{
 		RelPath:  e.relPath,
 		Hash:     doc.Hash,
 		MTime:    e.mtime,
@@ -275,7 +287,29 @@ func (ix *Indexer) processOne(
 		Content:  doc.Content,
 		Summary:  summary,
 		Keywords: keywords,
-	})
+	}); err != nil {
+		return outcome, err
+	}
+	ix.embedFile(ctx, e.relPath, doc.Title, doc.Content)
+	return outcome, nil
+}
+
+// embedFile computes and stores the embedding for a file. It is a no-op when no
+// Embedder is configured, and best-effort otherwise: an embedding failure is
+// swallowed so the file still gets indexed (and stays searchable via BM25).
+func (ix *Indexer) embedFile(ctx context.Context, relPath, title, content string) {
+	if ix.Embedder == nil {
+		return
+	}
+	text := strings.TrimSpace(title + "\n\n" + content)
+	if len(text) > embedCharBudget {
+		text = text[:embedCharBudget]
+	}
+	vecs, err := ix.Embedder.Embed(ctx, []string{text})
+	if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
+		return
+	}
+	_ = ix.Store.SetVector(ctx, relPath, vecs[0], ix.Embedder.Name())
 }
 
 func (ix *Indexer) extract(absPath string) (*extract.Document, error) {

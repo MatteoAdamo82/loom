@@ -9,7 +9,10 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const currentSchemaVersion = 2
+// v3 adds the optional file_vectors table for hybrid search. The bump is
+// additive: existing files/FTS rows are preserved; only the new (empty) table
+// is created. dropLegacyObjects leaves files and file_vectors untouched.
+const currentSchemaVersion = 3
 
 func migrate(db *sql.DB) error {
 	var prior int

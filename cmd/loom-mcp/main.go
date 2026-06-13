@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,15 +66,25 @@ func main() {
 		fatal("init llm: %v", err)
 	}
 
+	// Optional embeddings → hybrid search. Non-fatal if unavailable.
+	var embedder llmpkg.Embedder
+	if cfg.Embeddings.Enabled {
+		if e, eerr := llmpkg.BuildEmbedder(cfg.Embeddings.Provider, cfg.Embeddings.Model, cfg.Embeddings.Endpoint, cfg.Embeddings.APIKey()); eerr != nil {
+			log.Printf("loom-mcp: embeddings enabled but unavailable, using BM25 only: %v", eerr)
+		} else {
+			embedder = e
+		}
+	}
+
 	srv := server.NewMCPServer("loom", Version, server.WithToolCapabilities(false))
-	registerTools(srv, store, client, cfg)
+	registerTools(srv, store, client, embedder, cfg)
 
 	if err := server.ServeStdio(srv); err != nil {
 		fatal("serve stdio: %v", err)
 	}
 }
 
-func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Client, cfg *config.Config) {
+func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Client, embedder llmpkg.Embedder, cfg *config.Config) {
 	srv.AddTool(
 		mcp.NewTool("loom_ask",
 			mcp.WithDescription("Ask a natural-language question against the indexed notes folder. Loom runs a single LLM call over the BM25 top hits and returns a grounded answer with file citations."),
@@ -90,7 +101,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			topK := int(req.GetFloat("top_k", float64(query.DefaultTopK)))
-			res, err := query.Answer(ctx, store, client, q, topK)
+			res, err := query.Answer(ctx, store, client, embedder, q, topK)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -104,7 +115,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 
 	srv.AddTool(
 		mcp.NewTool("loom_search",
-			mcp.WithDescription("Run a raw BM25 search against the FTS index without invoking the LLM. Use when you want a deterministic list of relevant files."),
+			mcp.WithDescription("Search the index for relevant files without generating an answer. BM25 keyword search by default, or hybrid (BM25 + semantic vector) when embeddings are enabled. Use when you want a ranked list of relevant files."),
 			mcp.WithString("query", mcp.Required(),
 				mcp.Description("Free-text search terms")),
 			mcp.WithNumber("limit",
@@ -121,7 +132,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 			if limit <= 0 {
 				limit = 10
 			}
-			hits, err := store.Search(ctx, q, limit)
+			hits, err := query.Retrieve(ctx, store, embedder, q, limit)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -149,6 +160,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			force := req.GetBool("force", false)
 			ix := index.New(cfg.NotesDirs, store, client)
+				ix.Embedder = embedder
 				if m := cfg.LLM.OCRModel; m != "" {
 					ix.Registry = extract.NewRegistryWithOCR(cfg.LLM.Endpoint, m)
 				}

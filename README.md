@@ -4,7 +4,7 @@
 
 Loom is a small desktop app and CLI built around one idea: **the files in a folder are the truth**. You drop markdown, PDF, HTML and text files into a directory of your choice. Loom scans it, asks an LLM to write a summary and a handful of keywords for each file, and stores those next to a full-text index in SQLite. When you ask a question, Loom does ONE LLM call: it picks the most relevant files with BM25 and hands them to the model.
 
-No embeddings. No vector DB. No chunking. No graph. No fancy reranking.
+By default: no embeddings, no vector DB, no chunking, no graph, no fancy reranking. Semantic search is available as an **opt-in** (hybrid BM25 + vectors) for those who want it — it stays off unless you enable it, so the default experience is unchanged. See [Hybrid search](#hybrid-search-optional).
 
 This is a deliberate revival of [Andrej Karpathy's "LLM Wiki" pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f), with one concession: a tiny SQLite index so search stays snappy as the folder grows past `grep`-friendly size.
 
@@ -115,6 +115,38 @@ api_key_env = ""
 ```
 
 The `endpoint` field is optional for cloud providers (defaults are built in). For Ollama it defaults to `http://localhost:11434`.
+
+## Hybrid search (optional)
+
+By default Loom searches with **BM25 keyword matching** — fast, deterministic, no extra moving parts. That works well when the question shares words with the notes, but it misses paraphrases and cross-language queries (ask in English, notes in Italian).
+
+You can optionally turn on **hybrid search**: Loom stores one embedding vector per file at scan time and, at query time, fuses semantic similarity with BM25 using [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf). It stays true to Loom's design — the vectors live in the same SQLite file (a small `file_vectors` table), search is pure-Go brute-force cosine (no `sqlite-vec`, no CGO, no vector server), and **it's off unless you enable it**.
+
+Add an `[embeddings]` block to `~/.loom/config.toml`:
+
+```toml
+[embeddings]
+enabled  = true
+provider = "ollama"
+model    = "embeddinggemma:300m"   # multilingual, ~700 MB RAM, runs on CPU
+endpoint = "http://localhost:11434"
+dim      = 768                     # optional; 0 = use the model's native size
+# api_key_env = "OPENAI_API_KEY"   # only for provider = "openai"
+```
+
+Then re-index so the vectors get built:
+
+```sh
+ollama pull embeddinggemma:300m   # one-time, ~620 MB
+loom scan --force
+```
+
+Notes:
+
+- **Recommended model:** `embeddinggemma:300m` (Ollama) — multilingual (100+ languages, good for cross-language search), CPU-friendly, no GPU required. `provider = "openai"` (or any OpenAI-compatible `/v1/embeddings` endpoint) also works.
+- **Changing the embedding model** changes the vector space. Vectors from a different model/dimension are ignored until you run `loom scan --force` to re-embed everything — search degrades gracefully (back to BM25 for those files) rather than breaking.
+- **Granularity is per file.** Loom embeds one vector per file (consistent with its one-row-per-file model). For long documents, split them into smaller files so each vector stays focused.
+- **Disabling** it is just `enabled = false` (or removing the block). Existing vectors are left in place but ignored; BM25 keeps working.
 
 ## Organising your notes
 

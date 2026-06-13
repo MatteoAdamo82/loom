@@ -60,7 +60,7 @@ func TestAnswerHappyPath(t *testing.T) {
 	})
 
 	lc := &stubLLM{}
-	res, err := Answer(context.Background(), s, lc, "alpha", 5)
+	res, err := Answer(context.Background(), s, lc, nil, "alpha", 5)
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestAnswerHappyPath(t *testing.T) {
 func TestAnswerWithEmptyIndex(t *testing.T) {
 	s := newStore(t)
 	lc := &stubLLM{}
-	res, err := Answer(context.Background(), s, lc, "anything", 5)
+	res, err := Answer(context.Background(), s, lc, nil, "anything", 5)
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestPerFileBudgetIsRespected(t *testing.T) {
 	})
 
 	lc := &stubLLM{}
-	if _, err := Answer(context.Background(), s, lc, "xs", 5); err != nil {
+	if _, err := Answer(context.Background(), s, lc, nil, "xs", 5); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(lc.lastPrompt, "[...truncated]") {
@@ -116,7 +116,7 @@ func TestCitationParserDeduplicates(t *testing.T) {
 	lc := &stubLLM{respond: func(string) string {
 		return "Alpha [a.md]. Anche qui [a.md]. E anche [b.md] (mancante)."
 	}}
-	res, err := Answer(context.Background(), s, lc, "alpha", 5)
+	res, err := Answer(context.Background(), s, lc, nil, "alpha", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
