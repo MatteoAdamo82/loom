@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-13
+
 ### Added
 - **Optional hybrid search (BM25 + embeddings).** Loom can now store one
   embedding vector per file at scan time and fuse semantic similarity with the
