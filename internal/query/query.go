@@ -6,6 +6,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -51,23 +52,24 @@ Use ONLY the notes provided below. If the notes don't contain the answer, say so
 Cite each fact with the file's relative path in square brackets, e.g. [ricette.md] or [papers/llm-wiki.md].
 Keep the answer concise. Reply in the same language as the question.`
 
-// Answer runs a non-streaming query end-to-end.
-func Answer(ctx context.Context, store *storage.Store, lc llm.Client, question string, topK int) (*Result, error) {
-	return run(ctx, store, lc, question, topK, nil)
+// Answer runs a non-streaming query end-to-end. When emb is non-nil, retrieval
+// is hybrid (BM25 + vector); pass nil for pure BM25.
+func Answer(ctx context.Context, store *storage.Store, lc llm.Client, emb llm.Embedder, question string, topK int) (*Result, error) {
+	return run(ctx, store, lc, emb, question, topK, nil)
 }
 
 // Stream runs the same query but emits content deltas via onChunk while the
 // model writes. Falls back to Answer() if the LLM client doesn't implement
 // Streamer.
-func Stream(ctx context.Context, store *storage.Store, lc llm.Client, question string, topK int, onChunk func(string)) (*Result, error) {
-	return run(ctx, store, lc, question, topK, onChunk)
+func Stream(ctx context.Context, store *storage.Store, lc llm.Client, emb llm.Embedder, question string, topK int, onChunk func(string)) (*Result, error) {
+	return run(ctx, store, lc, emb, question, topK, onChunk)
 }
 
 // run is the single implementation shared by Answer and Stream.
 // When onChunk is nil, or the client doesn't implement llm.Streamer, it falls
 // back to a regular Chat() call.
-func run(ctx context.Context, store *storage.Store, lc llm.Client, question string, topK int, onChunk func(string)) (*Result, error) {
-	hits, err := pickHits(ctx, store, question, topK)
+func run(ctx context.Context, store *storage.Store, lc llm.Client, emb llm.Embedder, question string, topK int, onChunk func(string)) (*Result, error) {
+	hits, err := pickHits(ctx, store, emb, question, topK)
 	if err != nil {
 		return nil, err
 	}
@@ -109,17 +111,46 @@ func run(ctx context.Context, store *storage.Store, lc llm.Client, question stri
 	return finalise(content, hits), nil
 }
 
-// pickHits runs FTS, falls back to listing all files when the index is small
-// enough that a keyword-free fallback still gives the LLM useful context.
-// Unlike before, a storage error is always propagated — it is not silently
-// treated as "no results".
-func pickHits(ctx context.Context, store *storage.Store, question string, topK int) ([]*storage.Hit, error) {
+// Retrieve picks the top-K files for a question. With an embedder it fuses BM25
+// and vector similarity (Reciprocal Rank Fusion); without one (emb == nil) it is
+// plain BM25 — byte-for-byte the previous behaviour. A failed query embedding
+// degrades to BM25 rather than erroring. Returns a possibly-empty slice; an
+// empty index or no-match is (nil, nil), not an error.
+func Retrieve(ctx context.Context, store *storage.Store, emb llm.Embedder, question string, topK int) ([]*storage.Hit, error) {
+	if topK <= 0 {
+		topK = DefaultTopK
+	}
+	if emb != nil {
+		if vecs, err := emb.Embed(ctx, []string{question}); err == nil && len(vecs) == 1 && len(vecs[0]) > 0 {
+			hits, herr := store.HybridSearch(ctx, question, vecs[0], topK)
+			if herr == nil {
+				return hits, nil
+			}
+			if !errors.Is(herr, storage.ErrNotFound) {
+				return nil, herr
+			}
+			return nil, nil
+		}
+		// embedding unavailable → fall through to BM25
+	}
+	hits, err := store.Search(ctx, question, topK)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return nil, err
+	}
+	return hits, nil
+}
+
+// pickHits runs retrieval, falling back to listing all files when the index is
+// small enough that a keyword-free fallback still gives the LLM useful context.
+// A storage error is always propagated — it is not silently treated as "no
+// results".
+func pickHits(ctx context.Context, store *storage.Store, emb llm.Embedder, question string, topK int) ([]*storage.Hit, error) {
 	if topK <= 0 {
 		topK = DefaultTopK
 	}
 
-	hits, err := store.Search(ctx, question, topK)
-	if err != nil && err != storage.ErrNotFound {
+	hits, err := Retrieve(ctx, store, emb, question, topK)
+	if err != nil {
 		return nil, fmt.Errorf("search index: %w", err)
 	}
 	if len(hits) > 0 {

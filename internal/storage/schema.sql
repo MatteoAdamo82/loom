@@ -46,6 +46,18 @@ CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
   VALUES (new.id, new.title, new.summary, new.keywords, new.content);
 END;
 
+-- Optional per-file embedding for hybrid (BM25 + vector) search.
+-- Empty unless the [embeddings] config block is enabled. One vector per file;
+-- ON DELETE CASCADE keeps it in sync when a file row is removed. `vec` is a
+-- packed little-endian float32 blob; `dim` lets vector search skip rows indexed
+-- with a different model after a model change (graceful until `loom scan --force`).
+CREATE TABLE IF NOT EXISTS file_vectors (
+  file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+  dim     INTEGER NOT NULL,
+  model   TEXT    NOT NULL DEFAULT '',
+  vec     BLOB    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_version (
   version    INTEGER PRIMARY KEY,
   applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

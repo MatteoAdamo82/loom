@@ -145,6 +145,7 @@ func cmdScan(args []string) error {
 	defer rt.store.Close()
 
 	ix := index.New(rt.cfg.NotesDirs, rt.store, rt.llm)
+	ix.Embedder = rt.embedder
 	if m := rt.cfg.LLM.OCRModel; m != "" {
 		ix.Registry = extract.NewRegistryWithOCR(rt.cfg.LLM.Endpoint, m)
 	}
@@ -204,7 +205,7 @@ func cmdAsk(args []string) error {
 	defer rt.store.Close()
 
 	ctx := signalContext()
-	res, err := query.Stream(ctx, rt.store, rt.llm, question, query.DefaultTopK, func(chunk string) {
+	res, err := query.Stream(ctx, rt.store, rt.llm, rt.embedder, question, query.DefaultTopK, func(chunk string) {
 		fmt.Print(chunk)
 	})
 	if err != nil {
@@ -226,9 +227,10 @@ func cmdAsk(args []string) error {
 // ---------------------------------------------------------------------------
 
 type runtime struct {
-	cfg   *config.Config
-	store *storage.Store
-	llm   llm.Client
+	cfg      *config.Config
+	store    *storage.Store
+	llm      llm.Client
+	embedder llm.Embedder // nil → BM25 only
 }
 
 func bootstrap(cfgPath string) (*runtime, error) {
@@ -253,7 +255,16 @@ func bootstrap(cfgPath string) (*runtime, error) {
 		store.Close()
 		return nil, err
 	}
-	return &runtime{cfg: cfg, store: store, llm: lc}, nil
+	var emb llm.Embedder
+	if cfg.Embeddings.Enabled {
+		e, eerr := llm.BuildEmbedder(cfg.Embeddings.Provider, cfg.Embeddings.Model, cfg.Embeddings.Endpoint, cfg.Embeddings.APIKey())
+		if eerr != nil {
+			store.Close()
+			return nil, fmt.Errorf("init embeddings: %w", eerr)
+		}
+		emb = e
+	}
+	return &runtime{cfg: cfg, store: store, llm: lc, embedder: emb}, nil
 }
 
 func makeLLM(cfg config.LLMConfig) (llm.Client, error) {

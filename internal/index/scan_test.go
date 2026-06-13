@@ -65,6 +65,72 @@ func writeNote(t *testing.T, dir, name, body string) {
 	}
 }
 
+// stubEmbedder returns a deterministic fixed-dimension vector per input, so the
+// scan→embed→store wiring can be tested without a live embedding model.
+type stubEmbedder struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (e *stubEmbedder) Name() string { return "stub-embed" }
+func (e *stubEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	e.mu.Lock()
+	e.calls += len(texts)
+	e.mu.Unlock()
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		// A trivial but input-dependent vector: length-based, fixed dim 3.
+		n := float32(len(t))
+		out[i] = []float32{n, n / 2, 1}
+	}
+	return out, nil
+}
+
+func TestScanStoresVectorsWhenEmbedderSet(t *testing.T) {
+	notesDir, store, lc := setupNotes(t)
+	writeNote(t, notesDir, "a.md", "# A\nhello world")
+	writeNote(t, notesDir, "b.md", "# B\nciao mondo")
+
+	emb := &stubEmbedder{}
+	ix := New([]string{notesDir}, store, lc)
+	ix.Embedder = emb
+	if _, err := ix.Scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	ok, err := store.HasVectors(context.Background())
+	if err != nil {
+		t.Fatalf("has vectors: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected vectors to be stored when an embedder is configured")
+	}
+	if emb.calls != 2 {
+		t.Errorf("expected the embedder to be called for 2 files, got %d", emb.calls)
+	}
+	// The stored vectors must be queryable via the vector path.
+	hits, err := store.VectorSearch(context.Background(), []float32{11, 5, 1}, 5)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Errorf("expected 2 vector hits, got %d", len(hits))
+	}
+}
+
+func TestScanSkipsVectorsWhenNoEmbedder(t *testing.T) {
+	notesDir, store, lc := setupNotes(t)
+	writeNote(t, notesDir, "a.md", "# A\nhello world")
+
+	ix := New([]string{notesDir}, store, lc) // no Embedder
+	if _, err := ix.Scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if ok, _ := store.HasVectors(context.Background()); ok {
+		t.Error("no vectors should be stored when no embedder is configured")
+	}
+}
+
 func TestScanIndexesNewFiles(t *testing.T) {
 	notesDir, store, lc := setupNotes(t)
 	writeNote(t, notesDir, "a.md", "# A\nhello world")

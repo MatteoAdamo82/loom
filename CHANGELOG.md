@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-13
+
+### Added
+- **Optional hybrid search (BM25 + embeddings).** Loom can now store one
+  embedding vector per file at scan time and fuse semantic similarity with the
+  existing BM25 ranking using Reciprocal Rank Fusion (RRF). This closes BM25's
+  blind spots — paraphrases and cross-language queries — while keeping Loom's
+  design intact: vectors live in the same SQLite file (new `file_vectors`
+  table), search is pure-Go brute-force cosine (**no `sqlite-vec`, no CGO, no
+  vector server**), and the feature is **off by default**.
+  - Enable it with a new `[embeddings]` config block (`enabled`, `provider`,
+    `model`, `endpoint`, `dim`, `api_key_env`). Providers: `ollama` (default,
+    recommended `embeddinggemma:300m` — multilingual, CPU-friendly) and
+    `openai` (or any OpenAI-compatible `/v1/embeddings` endpoint).
+  - Applies everywhere: `loom ask`, `loom_search`/`loom_ask` over MCP, the HTTP
+    `/search` endpoint, and the GUI. When disabled, behaviour is byte-for-byte
+    the previous pure-BM25 path.
+  - Run `loom scan --force` after enabling, or after changing the model.
+    Vectors from a different model/dimension are skipped (search degrades to
+    BM25 for those files) until re-indexed — never an error.
+
+### Changed
+- **Schema bumped to v3** (additive): a new `file_vectors` table is created
+  alongside the existing `files`/FTS index. Existing indexes are preserved and
+  keep working unchanged; the table stays empty unless embeddings are enabled.
+
 ## [0.4.3] - 2026-06-01
 
 ### Fixed

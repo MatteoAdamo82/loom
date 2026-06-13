@@ -16,9 +16,10 @@ import (
 )
 
 type Config struct {
-	NotesDirs []string  `toml:"notes_dirs"`
-	DBPath    string    `toml:"db_path"`
-	LLM       LLMConfig `toml:"llm"`
+	NotesDirs  []string        `toml:"notes_dirs"`
+	DBPath     string          `toml:"db_path"`
+	LLM        LLMConfig       `toml:"llm"`
+	Embeddings EmbeddingConfig `toml:"embeddings"`
 
 	loadedFrom string
 }
@@ -29,6 +30,27 @@ type LLMConfig struct {
 	Endpoint  string `toml:"endpoint"`
 	APIKeyEnv string `toml:"api_key_env"` // env var name holding the key
 	OCRModel  string `toml:"ocr_model"`   // optional: Ollama vision model for image/PDF OCR
+}
+
+// EmbeddingConfig is optional. When Enabled, Loom stores one vector per file
+// at scan time and fuses semantic similarity with BM25 (hybrid search via
+// Reciprocal Rank Fusion). Default (zero value) is disabled → pure BM25, so
+// existing setups are unaffected.
+type EmbeddingConfig struct {
+	Enabled   bool   `toml:"enabled"`
+	Provider  string `toml:"provider"`    // "ollama" | "openai"
+	Model     string `toml:"model"`       // e.g. "embeddinggemma:300m"
+	Endpoint  string `toml:"endpoint"`
+	APIKeyEnv string `toml:"api_key_env"` // env var name holding the key (openai)
+	Dim       int    `toml:"dim"`         // optional; 0 = use the model's native size
+}
+
+// APIKey resolves the key named by EmbeddingConfig.APIKeyEnv from the environment.
+func (e EmbeddingConfig) APIKey() string {
+	if e.APIKeyEnv == "" {
+		return ""
+	}
+	return os.Getenv(e.APIKeyEnv)
 }
 
 func Default() *Config {
@@ -174,6 +196,25 @@ db_path    = %q
 		}
 		fmt.Fprintln(w)
 	}
+
+	fmt.Fprint(w, `# ── Embeddings (optional — hybrid search) ────────────────────────────────────
+# OFF by default: Loom uses pure BM25 keyword search, exactly as before.
+# When enabled, Loom also stores one vector per file at scan time and fuses
+# semantic similarity with BM25 (Reciprocal Rank Fusion) for better recall on
+# paraphrases and across languages. Requires an embedding model.
+#
+# Recommended: Ollama "embeddinggemma:300m" — multilingual, ~700 MB RAM,
+# CPU-friendly (no GPU needed). Run "loom scan --force" after enabling or after
+# changing the model (vectors from a different model are ignored until reindexed).
+#
+# [embeddings]
+# enabled  = true
+# provider = "ollama"
+# model    = "embeddinggemma:300m"
+# endpoint = "http://localhost:11434"
+# dim      = 768                    # optional; 0 = use the model's native size
+# # api_key_env = "OPENAI_API_KEY"  # only for provider = "openai"
+`)
 	return nil
 }
 
@@ -181,10 +222,11 @@ db_path    = %q
 // notes_dirs array and the legacy notes_dir string so we can migrate
 // old config files transparently.
 type rawConfig struct {
-	NotesDir  string    `toml:"notes_dir"`  // legacy — single path
-	NotesDirs []string  `toml:"notes_dirs"` // new — slice of paths
-	DBPath    string    `toml:"db_path"`
-	LLM       LLMConfig `toml:"llm"`
+	NotesDir   string          `toml:"notes_dir"`  // legacy — single path
+	NotesDirs  []string        `toml:"notes_dirs"` // new — slice of paths
+	DBPath     string          `toml:"db_path"`
+	LLM        LLMConfig       `toml:"llm"`
+	Embeddings EmbeddingConfig `toml:"embeddings"`
 }
 
 // Load reads config from path, merging values over Default(). A missing file
@@ -239,6 +281,37 @@ func (c *Config) merge(other *rawConfig) {
 	}
 	if other.LLM.OCRModel != "" {
 		c.LLM.OCRModel = other.LLM.OCRModel
+	}
+	c.mergeEmbeddings(&other.Embeddings)
+}
+
+// mergeEmbeddings copies the embeddings block over defaults and, when enabled,
+// fills in sensible defaults for any omitted field.
+func (c *Config) mergeEmbeddings(e *EmbeddingConfig) {
+	c.Embeddings.Enabled = e.Enabled
+	if e.Provider != "" {
+		c.Embeddings.Provider = e.Provider
+	}
+	if e.Model != "" {
+		c.Embeddings.Model = e.Model
+	}
+	if e.Endpoint != "" {
+		c.Embeddings.Endpoint = e.Endpoint
+	}
+	if e.APIKeyEnv != "" {
+		c.Embeddings.APIKeyEnv = e.APIKeyEnv
+	}
+	if e.Dim != 0 {
+		c.Embeddings.Dim = e.Dim
+	}
+	if !c.Embeddings.Enabled {
+		return
+	}
+	if c.Embeddings.Provider == "" {
+		c.Embeddings.Provider = "ollama"
+	}
+	if c.Embeddings.Endpoint == "" && c.Embeddings.Provider == "ollama" {
+		c.Embeddings.Endpoint = "http://localhost:11434"
 	}
 }
 
