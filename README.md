@@ -308,14 +308,35 @@ LOOM_HTTP_ADDR=:8080 loom-http --config ~/.loom/config.toml
 | Method & path | Purpose |
 |---|---|
 | `GET /healthz` | Liveness check |
-| `POST /search {query, limit?}` | Raw BM25 hits (`rel_path,title,summary,content,rank`) — **no LLM call** |
-| `POST /scan {force?}` | (Re)index the notes folder (uses the LLM to summarise) |
+| `GET /corpora` | List corpora (multi-corpus mode) |
+| `POST /search {query, limit?, corpus?}` | Search hits (`rel_path,title,summary,content,rank`) — **no answer generation** (BM25, or hybrid if embeddings are on) |
+| `POST /scan {force?, corpus?}` | (Re)index the notes folder (uses the LLM to summarise) |
 
 `/search` is the natural fit for "retrieve, then let *my* model answer": your app gets the most relevant files and composes the reply with its own prompt. Example:
 
 ```bash
 curl -s localhost:8080/search -d '{"query":"check-in time","limit":3}'
 ```
+
+### Multi-corpus (multi-tenant) mode
+
+By default one `loom-http` process serves the single corpus in its config file. Set `LOOM_CORPUS_ROOT` to serve **many isolated corpora** from one process — handy for multi-tenant hosts:
+
+```bash
+LOOM_CORPUS_ROOT=/srv/knowledge LOOM_HTTP_ADDR=:8080 loom-http
+```
+
+Each request then carries a `corpus` name, resolved to `<root>/<corpus>/{notes,index.db}` with a **separate SQLite index per corpus**:
+
+```bash
+curl -s localhost:8080/scan   -d '{"corpus":"acme","force":true}'
+curl -s localhost:8080/search -d '{"corpus":"acme","query":"refund policy"}'
+curl -s localhost:8080/corpora
+```
+
+- Corpus names are validated to a single safe path segment (`[A-Za-z0-9_-]`, ≤64 chars), so one corpus can never read another's files.
+- The LLM and embeddings providers are **shared** across corpora (same models, same config). Hybrid search applies per corpus once its index has vectors.
+- Omitting `corpus` still works and targets the config-file corpus, so existing single-corpus integrations are unchanged.
 
 ## GUI
 
