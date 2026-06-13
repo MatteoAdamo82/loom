@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-13
+
+### Added
+- **Multi-corpus mode for `loom-http`.** Set `LOOM_CORPUS_ROOT` to serve many
+  isolated knowledge bases from one HTTP process (multi-tenant hosting). Each
+  request carries an optional `corpus` name, resolved to
+  `<root>/<corpus>/{notes,index.db}` with a **separate SQLite index per
+  corpus**. Corpus names are validated to a single safe path segment
+  (`[A-Za-z0-9_-]`, ≤64 chars), so one corpus can never read another's files.
+  The LLM/embeddings providers are shared across corpora. New `GET /corpora`
+  lists them; `POST /search` and `POST /scan` accept `corpus`.
+  - Fully backward-compatible: with `LOOM_CORPUS_ROOT` unset (or `corpus`
+    omitted) `loom-http` serves the single config-file corpus exactly as before.
+
 ## [0.5.0] - 2026-06-13
 
 ### Added
