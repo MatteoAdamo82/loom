@@ -331,14 +331,7 @@ func (s *server) scan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"added":       res.Added,
-		"updated":     res.Updated,
-		"removed":     res.Removed,
-		"skipped":     res.Skipped,
-		"failed":      res.Failed,
-		"duration_ms": res.Duration.Milliseconds(),
-	})
+	writeJSON(w, http.StatusOK, res.Payload())
 }
 
 func fileExists(p string) bool {

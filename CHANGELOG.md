@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`POST /scan` now reports *why* files failed.** The HTTP handler returned
+  only counters, so an integration that got `{"failed": 1, "updated": 0}` had no
+  way to tell which file broke or why, and re-running blind was the only
+  recourse. It now returns the same `errors` array (`rel_path` + `error`) the
+  CLI prints and the MCP tool already returned. All three interfaces share one
+  `Result.Payload()` renderer, so they cannot drift apart again.
+- **`moved` is now reported over HTTP and MCP.** A rename (same content, new
+  path — LLM call skipped) was counted internally and printed by the CLI, but
+  missing from the JSON, so API callers saw a rename as "nothing happened".
+
+### Changed
+- Refreshed the project description: the "no embeddings" tagline predated
+  opt-in hybrid search, and the packaged blurbs still advertised a
+  `ingest / query / lint` CLI that no longer exists.
+
 ## [0.6.0] - 2026-06-13
 
 ### Added
@@ -122,7 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Earlier releases. See the Git history and the
   [releases page](https://github.com/MatteoAdamo82/loom/releases) for details.
 
-[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/MatteoAdamo82/loom/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/MatteoAdamo82/loom/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/MatteoAdamo82/loom/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/MatteoAdamo82/loom/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/MatteoAdamo82/loom/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/MatteoAdamo82/loom/compare/v0.4.0...v0.4.1

@@ -176,25 +176,7 @@ func registerTools(srv *server.MCPServer, store *storage.Store, client llmpkg.Cl
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			payload := map[string]any{
-				"added":       res.Added,
-				"updated":     res.Updated,
-				"removed":     res.Removed,
-				"skipped":     res.Skipped,
-				"failed":      res.Failed,
-				"duration_ms": res.Duration.Milliseconds(),
-			}
-			if res.Failed > 0 {
-				errs := make([]map[string]string, 0, len(res.Errors))
-				for _, fe := range res.Errors {
-					errs = append(errs, map[string]string{
-						"rel_path": fe.RelPath,
-						"error":    fe.Err.Error(),
-					})
-				}
-				payload["errors"] = errs
-			}
-			return jsonResult(payload), nil
+			return jsonResult(res.Payload()), nil
 		},
 	)
 

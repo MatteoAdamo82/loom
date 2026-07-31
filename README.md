@@ -2,7 +2,9 @@
 
 > A folder of files + an LLM as your knowledge base.
 
-Loom is a small desktop app and CLI built around one idea: **the files in a folder are the truth**. You drop markdown, PDF, HTML and text files into a directory of your choice. Loom scans it, asks an LLM to write a summary and a handful of keywords for each file, and stores those next to a full-text index in SQLite. When you ask a question, Loom does ONE LLM call: it picks the most relevant files with BM25 and hands them to the model.
+Loom is built around one idea: **the files in a folder are the truth**. You drop markdown, PDF, HTML, text — and, with OCR on, images and scanned PDFs — into a directory of your choice. Loom scans it, asks an LLM to write a summary and a handful of keywords for each file, and stores those next to a full-text index in SQLite. When you ask a question, Loom does ONE LLM call: it picks the most relevant files with BM25 and hands them to the model.
+
+It ships as four ways into the same index: a **CLI** (`loom`), an **MCP server** for Claude Code and Claude Desktop (`loom-mcp`), an optional **REST server** for everything else (`loom-http`, with multi-corpus support for hosting separate knowledge bases side by side), and a **desktop GUI** (`Loom.app`).
 
 By default: no embeddings, no vector DB, no chunking, no graph, no fancy reranking. Semantic search is available as an **opt-in** (hybrid BM25 + vectors) for those who want it — it stays off unless you enable it, so the default experience is unchanged. See [Hybrid search](#hybrid-search-optional).
 
@@ -317,6 +319,20 @@ LOOM_HTTP_ADDR=:8080 loom-http --config ~/.loom/config.toml
 ```bash
 curl -s localhost:8080/search -d '{"query":"check-in time","limit":3}'
 ```
+
+`/scan` reports counters plus, whenever a file fails, the reason it failed — so an
+automated integration can log or retry the specific file instead of re-running blind:
+
+```json
+{
+  "added": 0, "updated": 3, "moved": 1, "removed": 0, "skipped": 12,
+  "failed": 1, "duration_ms": 4210,
+  "errors": [{ "rel_path": "faq/prezzi.pdf", "error": "extract: bad xref" }]
+}
+```
+
+The `errors` key is present only when something failed. `moved` counts files whose
+content is unchanged but whose path changed (a rename — the LLM call is skipped).
 
 ### Multi-corpus (multi-tenant) mode
 

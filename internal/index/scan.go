@@ -52,6 +52,33 @@ type FileError struct {
 	Err     error
 }
 
+// Payload renders the result as the JSON shape returned by the MCP and HTTP
+// scan endpoints, so both report the same thing. Per-file errors are included
+// whenever any file failed: a bare "failed: 1" leaves a caller with no way to
+// tell which file broke or why, and re-running blind is the only recourse.
+func (r *Result) Payload() map[string]any {
+	p := map[string]any{
+		"added":       r.Added,
+		"updated":     r.Updated,
+		"moved":       r.Moved,
+		"removed":     r.Removed,
+		"skipped":     r.Skipped,
+		"failed":      r.Failed,
+		"duration_ms": r.Duration.Milliseconds(),
+	}
+	if len(r.Errors) > 0 {
+		errs := make([]map[string]string, 0, len(r.Errors))
+		for _, fe := range r.Errors {
+			errs = append(errs, map[string]string{
+				"rel_path": fe.RelPath,
+				"error":    fe.Err.Error(),
+			})
+		}
+		p["errors"] = errs
+	}
+	return p
+}
+
 // Event is published while a scan runs so the GUI can show progress.
 type Event struct {
 	Phase   string // "scan" | "summarize" | "delete" | "done"

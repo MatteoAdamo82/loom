@@ -68,7 +68,7 @@ brews:
       branch: main
       token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
     homepage: 'https://github.com/MatteoAdamo82/loom'
-    description: 'LLM memory: SQLite + BM25 + LLM, no embeddings.'
+    description: 'Local knowledge base over a folder of files: SQLite + BM25, one LLM call.'
     license: MIT
     commit_author:
       name: goreleaserbot
@@ -84,7 +84,7 @@ brews:
     skip_upload: auto
     caveats: |
       Loom installed two binaries:
-        - loom       — CLI for ingest, query, lint
+        - loom       — CLI: init / scan / ask
         - loom-mcp   — Model Context Protocol stdio server
 
       Run `loom init` to create ~/.loom/config.toml and your SQLite store.
@@ -117,10 +117,11 @@ release:
   header: |
     ## Loom {{ .Tag }}
 
-    LLM memory: SQLite + BM25 + LLM, no embeddings.
+    A folder of files as your knowledge base: SQLite + BM25 + one LLM call,
+    with optional hybrid vector search.
 
     Two binaries are bundled in each archive:
-    - `loom` — CLI for ingest, query, lint
+    - `loom` — CLI: `init` / `scan` / `ask`
     - `loom-mcp` — Model Context Protocol stdio server
 
     The macOS GUI app (`Loom.app`) is uploaded as a separate asset.

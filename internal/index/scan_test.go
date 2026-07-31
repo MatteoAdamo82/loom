@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -399,5 +400,50 @@ func TestScanMultipleDirsDeleteReconciliation(t *testing.T) {
 	files, _ := store.List(context.Background())
 	if len(files) != 1 || files[0].RelPath != "work/a.md" {
 		t.Errorf("expected only work/a.md, got %+v", files)
+	}
+}
+
+// Payload is what the MCP and HTTP scan endpoints return. Callers that only
+// see counters cannot tell which file failed or why, so per-file errors must
+// travel with the counts.
+func TestResultPayloadIncludesErrorsAndMoved(t *testing.T) {
+	res := &Result{
+		Added: 1, Updated: 2, Moved: 3, Removed: 4, Skipped: 5, Failed: 1,
+		Duration: 1500 * time.Millisecond,
+		Errors:   []FileError{{RelPath: "notes/broken.pdf", Err: errors.New("extract: bad xref")}},
+	}
+
+	p := res.Payload()
+
+	for key, want := range map[string]any{
+		"added": 1, "updated": 2, "moved": 3, "removed": 4, "skipped": 5, "failed": 1,
+	} {
+		if p[key] != want {
+			t.Errorf("%s = %v, want %v", key, p[key], want)
+		}
+	}
+	if p["duration_ms"] != int64(1500) {
+		t.Errorf("duration_ms = %v, want 1500", p["duration_ms"])
+	}
+
+	errs, ok := p["errors"].([]map[string]string)
+	if !ok || len(errs) != 1 {
+		t.Fatalf("errors = %#v, want 1 entry", p["errors"])
+	}
+	if errs[0]["rel_path"] != "notes/broken.pdf" {
+		t.Errorf("rel_path = %q", errs[0]["rel_path"])
+	}
+	if errs[0]["error"] != "extract: bad xref" {
+		t.Errorf("error = %q", errs[0]["error"])
+	}
+}
+
+func TestResultPayloadOmitsErrorsWhenClean(t *testing.T) {
+	p := (&Result{Added: 1}).Payload()
+	if _, present := p["errors"]; present {
+		t.Errorf("errors key should be absent on a clean scan, got %#v", p["errors"])
+	}
+	if p["moved"] != 0 {
+		t.Errorf("moved should always be reported, got %v", p["moved"])
 	}
 }
